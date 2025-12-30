@@ -1,6 +1,6 @@
-# ccc - Claude Code Controller
+# ccc - Claude Code Companion
 
-> Control [Claude Code](https://claude.ai/claude-code) sessions remotely via Telegram. Start sessions from your phone, interact with Claude, and receive notifications when tasks complete.
+> Your companion for [Claude Code](https://claude.ai/claude-code) - control sessions remotely via Telegram. Start sessions from your phone, interact with Claude, and receive notifications when tasks complete.
 
 [![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)

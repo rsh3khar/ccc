@@ -1030,9 +1030,9 @@ func listen() error {
 }
 
 func printHelp() {
-	fmt.Printf(`ccc - Claude Code Controller v%s
+	fmt.Printf(`ccc - Claude Code Companion v%s
 
-A tool to manage Claude Code sessions via Telegram and tmux.
+Your companion for Claude Code - control sessions remotely via Telegram and tmux.
 
 USAGE:
     ccc                     Start/attach tmux session in current directory

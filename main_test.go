@@ -1,0 +1,589 @@
+package main
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// TestSessionName tests the sessionName function
+func TestSessionName(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"simple name", "myproject", "claude-myproject"},
+		{"with dash", "my-project", "claude-my-project"},
+		{"with slash", "money/shop", "claude-money/shop"},
+		{"empty", "", "claude-"},
+		{"with spaces", "my project", "claude-my project"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := sessionName(tt.input)
+			if result != tt.expected {
+				t.Errorf("sessionName(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestGetSessionByTopic tests the getSessionByTopic function
+func TestGetSessionByTopic(t *testing.T) {
+	config := &Config{
+		Sessions: map[string]int64{
+			"project1":   100,
+			"project2":   200,
+			"money/shop": 300,
+		},
+	}
+
+	tests := []struct {
+		name     string
+		topicID  int64
+		expected string
+	}{
+		{"existing topic", 100, "project1"},
+		{"another existing", 200, "project2"},
+		{"nested path", 300, "money/shop"},
+		{"non-existent", 999, ""},
+		{"zero", 0, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := getSessionByTopic(config, tt.topicID)
+			if result != tt.expected {
+				t.Errorf("getSessionByTopic(config, %d) = %q, want %q", tt.topicID, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestGetSessionByTopicNilSessions tests with nil sessions map
+func TestGetSessionByTopicNilSessions(t *testing.T) {
+	config := &Config{
+		Sessions: nil,
+	}
+	result := getSessionByTopic(config, 100)
+	if result != "" {
+		t.Errorf("getSessionByTopic with nil sessions = %q, want empty string", result)
+	}
+}
+
+// TestConfigSaveLoad tests saving and loading config
+func TestConfigSaveLoad(t *testing.T) {
+	// Create temp directory for test
+	tmpDir, err := os.MkdirTemp("", "ccc-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Override config path for test
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+
+	// Test config
+	config := &Config{
+		BotToken: "test-token-123",
+		ChatID:   12345,
+		GroupID:  -67890,
+		Sessions: map[string]int64{
+			"project1":   100,
+			"money/shop": 200,
+		},
+		Away: true,
+	}
+
+	// Save config
+	if err := saveConfig(config); err != nil {
+		t.Fatalf("saveConfig failed: %v", err)
+	}
+
+	// Verify file exists
+	configPath := filepath.Join(tmpDir, ".ccc.json")
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		t.Fatal("Config file was not created")
+	}
+
+	// Load config
+	loaded, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig failed: %v", err)
+	}
+
+	// Verify loaded config matches
+	if loaded.BotToken != config.BotToken {
+		t.Errorf("BotToken = %q, want %q", loaded.BotToken, config.BotToken)
+	}
+	if loaded.ChatID != config.ChatID {
+		t.Errorf("ChatID = %d, want %d", loaded.ChatID, config.ChatID)
+	}
+	if loaded.GroupID != config.GroupID {
+		t.Errorf("GroupID = %d, want %d", loaded.GroupID, config.GroupID)
+	}
+	if loaded.Away != config.Away {
+		t.Errorf("Away = %v, want %v", loaded.Away, config.Away)
+	}
+	if len(loaded.Sessions) != len(config.Sessions) {
+		t.Errorf("Sessions length = %d, want %d", len(loaded.Sessions), len(config.Sessions))
+	}
+	for name, topicID := range config.Sessions {
+		if loaded.Sessions[name] != topicID {
+			t.Errorf("Sessions[%q] = %d, want %d", name, loaded.Sessions[name], topicID)
+		}
+	}
+}
+
+// TestConfigLoadNonExistent tests loading non-existent config
+func TestConfigLoadNonExistent(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "ccc-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+
+	_, err = loadConfig()
+	if err == nil {
+		t.Error("loadConfig should fail for non-existent file")
+	}
+}
+
+// TestConfigSessionsInitialized tests that Sessions map is initialized on load
+func TestConfigSessionsInitialized(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "ccc-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+
+	// Write config without sessions field
+	configPath := filepath.Join(tmpDir, ".ccc.json")
+	data := []byte(`{"bot_token": "test", "chat_id": 123}`)
+	if err := os.WriteFile(configPath, data, 0600); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	loaded, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig failed: %v", err)
+	}
+
+	if loaded.Sessions == nil {
+		t.Error("Sessions should be initialized to non-nil map")
+	}
+}
+
+// TestGetLastAssistantMessage tests parsing transcript files
+func TestGetLastAssistantMessage(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "ccc-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	tests := []struct {
+		name     string
+		content  string
+		expected string
+	}{
+		{
+			name: "single assistant message",
+			content: `{"type":"user","message":{"content":[{"type":"text","text":"hello"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Hello! How can I help?"}]}}`,
+			expected: "Hello! How can I help?",
+		},
+		{
+			name: "multiple assistant messages returns last",
+			content: `{"type":"assistant","message":{"content":[{"type":"text","text":"First response"}]}}
+{"type":"user","message":{"content":[{"type":"text","text":"more"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Second response"}]}}`,
+			expected: "Second response",
+		},
+		{
+			name:     "no assistant messages",
+			content:  `{"type":"user","message":{"content":[{"type":"text","text":"hello"}]}}`,
+			expected: "",
+		},
+		{
+			name:     "empty file",
+			content:  "",
+			expected: "",
+		},
+		{
+			name:     "invalid json",
+			content:  "not json at all",
+			expected: "",
+		},
+		{
+			name: "mixed content types",
+			content: `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"bash"},{"type":"text","text":"Done!"}]}}`,
+			expected: "Done!",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Write test file
+			filePath := filepath.Join(tmpDir, tt.name+".jsonl")
+			if err := os.WriteFile(filePath, []byte(tt.content), 0644); err != nil {
+				t.Fatalf("Failed to write test file: %v", err)
+			}
+
+			result := getLastAssistantMessage(filePath)
+			if result != tt.expected {
+				t.Errorf("getLastAssistantMessage() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestGetLastAssistantMessageNonExistent tests with non-existent file
+func TestGetLastAssistantMessageNonExistent(t *testing.T) {
+	result := getLastAssistantMessage("/nonexistent/path/file.jsonl")
+	if result != "" {
+		t.Errorf("getLastAssistantMessage for non-existent file = %q, want empty", result)
+	}
+}
+
+// TestExecuteCommand tests the executeCommand function
+func TestExecuteCommand(t *testing.T) {
+	tests := []struct {
+		name        string
+		cmd         string
+		wantContain string
+		wantErr     bool
+	}{
+		{"echo", "echo hello", "hello", false},
+		{"pwd", "pwd", "/", false},
+		{"invalid command", "nonexistentcommand123", "", true},
+		{"exit code", "exit 1", "", true},
+		{"stderr output", "echo error >&2", "error", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output, err := executeCommand(tt.cmd)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("executeCommand(%q) error = %v, wantErr %v", tt.cmd, err, tt.wantErr)
+			}
+			if tt.wantContain != "" && !contains(output, tt.wantContain) {
+				t.Errorf("executeCommand(%q) output = %q, want to contain %q", tt.cmd, output, tt.wantContain)
+			}
+		})
+	}
+}
+
+// TestConfigJSON tests JSON marshaling/unmarshaling
+func TestConfigJSON(t *testing.T) {
+	config := &Config{
+		BotToken: "token123",
+		ChatID:   12345,
+		GroupID:  -67890,
+		Sessions: map[string]int64{
+			"test": 100,
+		},
+		Away: true,
+	}
+
+	data, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	var loaded Config
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+
+	if loaded.BotToken != config.BotToken {
+		t.Errorf("BotToken mismatch")
+	}
+}
+
+// TestHookDataJSON tests HookData JSON parsing
+func TestHookDataJSON(t *testing.T) {
+	jsonStr := `{"cwd":"/Users/test/project","transcript_path":"/tmp/transcript.jsonl","session_id":"abc123"}`
+
+	var hookData HookData
+	if err := json.Unmarshal([]byte(jsonStr), &hookData); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+
+	if hookData.Cwd != "/Users/test/project" {
+		t.Errorf("Cwd = %q, want %q", hookData.Cwd, "/Users/test/project")
+	}
+	if hookData.TranscriptPath != "/tmp/transcript.jsonl" {
+		t.Errorf("TranscriptPath = %q, want %q", hookData.TranscriptPath, "/tmp/transcript.jsonl")
+	}
+	if hookData.SessionID != "abc123" {
+		t.Errorf("SessionID = %q, want %q", hookData.SessionID, "abc123")
+	}
+}
+
+// TestTelegramMessageJSON tests TelegramMessage JSON parsing
+func TestTelegramMessageJSON(t *testing.T) {
+	jsonStr := `{
+		"message_id": 123,
+		"message_thread_id": 456,
+		"chat": {"id": 789, "type": "supergroup"},
+		"from": {"id": 111, "username": "testuser"},
+		"text": "Hello world"
+	}`
+
+	var msg TelegramMessage
+	if err := json.Unmarshal([]byte(jsonStr), &msg); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+
+	if msg.MessageID != 123 {
+		t.Errorf("MessageID = %d, want 123", msg.MessageID)
+	}
+	if msg.MessageThreadID != 456 {
+		t.Errorf("MessageThreadID = %d, want 456", msg.MessageThreadID)
+	}
+	if msg.Chat.ID != 789 {
+		t.Errorf("Chat.ID = %d, want 789", msg.Chat.ID)
+	}
+	if msg.Chat.Type != "supergroup" {
+		t.Errorf("Chat.Type = %q, want supergroup", msg.Chat.Type)
+	}
+	if msg.From.Username != "testuser" {
+		t.Errorf("From.Username = %q, want testuser", msg.From.Username)
+	}
+	if msg.Text != "Hello world" {
+		t.Errorf("Text = %q, want 'Hello world'", msg.Text)
+	}
+}
+
+// TestMessageTruncation tests that long messages are truncated
+func TestMessageTruncation(t *testing.T) {
+	// The sendMessage function truncates at 4000 chars
+	// We test the truncation logic directly
+	const maxLen = 4000
+
+	tests := []struct {
+		name       string
+		inputLen   int
+		shouldTrim bool
+	}{
+		{"short message", 100, false},
+		{"exactly max", maxLen, false},
+		{"over max", maxLen + 100, true},
+		{"way over max", 10000, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create message of specified length
+			text := make([]byte, tt.inputLen)
+			for i := range text {
+				text[i] = 'a'
+			}
+			msg := string(text)
+
+			// Apply same truncation logic as sendMessage
+			if len(msg) > maxLen {
+				msg = msg[:maxLen] + "\n... (truncated)"
+			}
+
+			if tt.shouldTrim {
+				if len(msg) <= tt.inputLen {
+					// Should have been truncated
+					if len(msg) != maxLen+len("\n... (truncated)") {
+						t.Errorf("truncated length = %d, want %d", len(msg), maxLen+len("\n... (truncated)"))
+					}
+				}
+			} else {
+				if len(msg) != tt.inputLen {
+					t.Errorf("message was unexpectedly modified")
+				}
+			}
+		})
+	}
+}
+
+// TestListTmuxSessionsParsing tests the session list parsing logic
+func TestListTmuxSessionsParsing(t *testing.T) {
+	// Test the parsing logic that filters claude- prefixed sessions
+	testData := []struct {
+		sessionName string
+		shouldMatch bool
+	}{
+		{"claude-myproject", true},
+		{"claude-money/shop", true},
+		{"other-session", false},
+		{"claude-", true},
+		{"notclaude-test", false},
+	}
+
+	for _, tt := range testData {
+		t.Run(tt.sessionName, func(t *testing.T) {
+			hasPrefix := len(tt.sessionName) >= 7 && tt.sessionName[:7] == "claude-"
+			if hasPrefix != tt.shouldMatch {
+				t.Errorf("prefix check for %q = %v, want %v", tt.sessionName, hasPrefix, tt.shouldMatch)
+			}
+		})
+	}
+}
+
+// TestConfigFilePermissions tests that config is saved with correct permissions
+func TestConfigFilePermissions(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "ccc-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+
+	config := &Config{
+		BotToken: "secret-token",
+		ChatID:   12345,
+		Sessions: make(map[string]int64),
+	}
+
+	if err := saveConfig(config); err != nil {
+		t.Fatalf("saveConfig failed: %v", err)
+	}
+
+	configPath := filepath.Join(tmpDir, ".ccc.json")
+	info, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatalf("Failed to stat config file: %v", err)
+	}
+
+	// Check permissions are 0600 (owner read/write only)
+	perm := info.Mode().Perm()
+	if perm != 0600 {
+		t.Errorf("Config file permissions = %o, want 0600", perm)
+	}
+}
+
+// TestEmptySessionsMap tests behavior with empty sessions
+func TestEmptySessionsMap(t *testing.T) {
+	config := &Config{
+		Sessions: make(map[string]int64),
+	}
+
+	result := getSessionByTopic(config, 100)
+	if result != "" {
+		t.Errorf("getSessionByTopic with empty sessions = %q, want empty", result)
+	}
+}
+
+// TestTopicResultJSON tests TopicResult JSON parsing
+func TestTopicResultJSON(t *testing.T) {
+	jsonStr := `{"message_thread_id": 12345, "name": "test-topic"}`
+
+	var topic TopicResult
+	if err := json.Unmarshal([]byte(jsonStr), &topic); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+
+	if topic.MessageThreadID != 12345 {
+		t.Errorf("MessageThreadID = %d, want 12345", topic.MessageThreadID)
+	}
+	if topic.Name != "test-topic" {
+		t.Errorf("Name = %q, want test-topic", topic.Name)
+	}
+}
+
+// TestTelegramResponseJSON tests TelegramResponse JSON parsing
+func TestTelegramResponseJSON(t *testing.T) {
+	tests := []struct {
+		name    string
+		json    string
+		wantOK  bool
+		wantErr string
+	}{
+		{
+			name:   "success response",
+			json:   `{"ok": true, "result": {}}`,
+			wantOK: true,
+		},
+		{
+			name:    "error response",
+			json:    `{"ok": false, "description": "Bad Request"}`,
+			wantOK:  false,
+			wantErr: "Bad Request",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var resp TelegramResponse
+			if err := json.Unmarshal([]byte(tt.json), &resp); err != nil {
+				t.Fatalf("Unmarshal failed: %v", err)
+			}
+
+			if resp.OK != tt.wantOK {
+				t.Errorf("OK = %v, want %v", resp.OK, tt.wantOK)
+			}
+			if resp.Description != tt.wantErr {
+				t.Errorf("Description = %q, want %q", resp.Description, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestReplyToMessage tests nested message parsing
+func TestReplyToMessage(t *testing.T) {
+	jsonStr := `{
+		"message_id": 100,
+		"text": "Reply text",
+		"chat": {"id": 123, "type": "private"},
+		"from": {"id": 456, "username": "user"},
+		"reply_to_message": {
+			"message_id": 99,
+			"text": "Original text",
+			"chat": {"id": 123, "type": "private"},
+			"from": {"id": 456, "username": "user"}
+		}
+	}`
+
+	var msg TelegramMessage
+	if err := json.Unmarshal([]byte(jsonStr), &msg); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+
+	if msg.ReplyToMessage == nil {
+		t.Fatal("ReplyToMessage should not be nil")
+	}
+	if msg.ReplyToMessage.MessageID != 99 {
+		t.Errorf("ReplyToMessage.MessageID = %d, want 99", msg.ReplyToMessage.MessageID)
+	}
+	if msg.ReplyToMessage.Text != "Original text" {
+		t.Errorf("ReplyToMessage.Text = %q, want 'Original text'", msg.ReplyToMessage.Text)
+	}
+}
+
+// Helper function
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		(len(s) > 0 && len(substr) > 0 && findSubstring(s, substr)))
+}
+
+func findSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}

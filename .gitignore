@@ -1,0 +1,15 @@
+# Binaries
+ccc
+*.exe
+
+# Test coverage
+coverage.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS files
+.DS_Store
+ping-telegram

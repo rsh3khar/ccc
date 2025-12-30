@@ -1,0 +1,1149 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+)
+
+const version = "1.0.0"
+
+// Config stores bot configuration and session mappings
+type Config struct {
+	BotToken string           `json:"bot_token"`
+	ChatID   int64            `json:"chat_id"`            // Private chat for simple commands
+	GroupID  int64            `json:"group_id,omitempty"` // Group with topics for sessions
+	Sessions map[string]int64 `json:"sessions,omitempty"` // session name -> topic ID
+	Away     bool             `json:"away"`
+}
+
+// TelegramMessage represents a Telegram message
+type TelegramMessage struct {
+	MessageID       int    `json:"message_id"`
+	MessageThreadID int64  `json:"message_thread_id,omitempty"` // Topic ID
+	Chat            struct {
+		ID   int64  `json:"id"`
+		Type string `json:"type"` // "private", "group", "supergroup"
+	} `json:"chat"`
+	From struct {
+		ID       int64  `json:"id"`
+		Username string `json:"username"`
+	} `json:"from"`
+	Text           string           `json:"text"`
+	ReplyToMessage *TelegramMessage `json:"reply_to_message,omitempty"`
+}
+
+// TelegramUpdate represents an update from Telegram
+type TelegramUpdate struct {
+	OK     bool `json:"ok"`
+	Result []struct {
+		UpdateID int             `json:"update_id"`
+		Message  TelegramMessage `json:"message"`
+	} `json:"result"`
+}
+
+// TelegramResponse represents a response from Telegram API
+type TelegramResponse struct {
+	OK          bool            `json:"ok"`
+	Description string          `json:"description,omitempty"`
+	Result      json.RawMessage `json:"result,omitempty"`
+}
+
+// TopicResult represents the result of creating a forum topic
+type TopicResult struct {
+	MessageThreadID int64  `json:"message_thread_id"`
+	Name            string `json:"name"`
+}
+
+// HookData represents data received from Claude hook
+type HookData struct {
+	Cwd            string `json:"cwd"`
+	TranscriptPath string `json:"transcript_path"`
+	SessionID      string `json:"session_id"`
+}
+
+func getConfigPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".ccc.json")
+}
+
+func loadConfig() (*Config, error) {
+	data, err := os.ReadFile(getConfigPath())
+	if err != nil {
+		return nil, err
+	}
+	var config Config
+	err = json.Unmarshal(data, &config)
+	if config.Sessions == nil {
+		config.Sessions = make(map[string]int64)
+	}
+	return &config, err
+}
+
+func saveConfig(config *Config) error {
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(getConfigPath(), data, 0600)
+}
+
+// Telegram API helpers
+
+func telegramAPI(config *Config, method string, params url.Values) (*TelegramResponse, error) {
+	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/%s", config.BotToken, method)
+	resp, err := http.PostForm(apiURL, params)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	var result TelegramResponse
+	json.Unmarshal(body, &result)
+	return &result, nil
+}
+
+func sendMessage(config *Config, chatID int64, threadID int64, text string) error {
+	const maxLen = 4000
+	if len(text) > maxLen {
+		text = text[:maxLen] + "\n... (truncated)"
+	}
+
+	params := url.Values{
+		"chat_id": {fmt.Sprintf("%d", chatID)},
+		"text":    {text},
+	}
+	if threadID > 0 {
+		params.Set("message_thread_id", fmt.Sprintf("%d", threadID))
+	}
+
+	result, err := telegramAPI(config, "sendMessage", params)
+	if err != nil {
+		return err
+	}
+	if !result.OK {
+		return fmt.Errorf("telegram error: %s", result.Description)
+	}
+	return nil
+}
+
+func createForumTopic(config *Config, name string) (int64, error) {
+	if config.GroupID == 0 {
+		return 0, fmt.Errorf("no group configured. Add bot to a group with topics enabled and run: ccc setgroup")
+	}
+
+	params := url.Values{
+		"chat_id": {fmt.Sprintf("%d", config.GroupID)},
+		"name":    {name},
+	}
+
+	result, err := telegramAPI(config, "createForumTopic", params)
+	if err != nil {
+		return 0, err
+	}
+	if !result.OK {
+		return 0, fmt.Errorf("failed to create topic: %s", result.Description)
+	}
+
+	var topic TopicResult
+	if err := json.Unmarshal(result.Result, &topic); err != nil {
+		return 0, fmt.Errorf("failed to parse topic result: %w", err)
+	}
+
+	return topic.MessageThreadID, nil
+}
+
+// Tmux session management
+
+var (
+	tmuxSocket string
+	tmuxPath   string
+	cccPath    string
+	claudePath string
+)
+
+func init() {
+	// Find tmux socket path using current UID
+	tmuxSocket = fmt.Sprintf("/private/tmp/tmux-%d/default", os.Getuid())
+
+	// Find tmux binary
+	if path, err := exec.LookPath("tmux"); err == nil {
+		tmuxPath = path
+	} else {
+		// Fallback paths for common installations
+		for _, p := range []string{"/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"} {
+			if _, err := os.Stat(p); err == nil {
+				tmuxPath = p
+				break
+			}
+		}
+	}
+
+	// Find ccc binary (self)
+	if exe, err := os.Executable(); err == nil {
+		cccPath = exe
+	}
+
+	// Find claude binary
+	home, _ := os.UserHomeDir()
+	claudePaths := []string{
+		filepath.Join(home, ".claude", "local", "claude"),
+		"/usr/local/bin/claude",
+	}
+	for _, p := range claudePaths {
+		if _, err := os.Stat(p); err == nil {
+			claudePath = p
+			break
+		}
+	}
+}
+
+func tmuxSessionExists(name string) bool {
+	cmd := exec.Command(tmuxPath, "-S", tmuxSocket, "has-session", "-t", name)
+	return cmd.Run() == nil
+}
+
+func createTmuxSession(name string, workDir string, continueSession bool) error {
+	// Build the command to run inside tmux
+	cccCmd := cccPath + " run"
+	if continueSession {
+		cccCmd += " -c"
+	}
+
+	// Use login shell to get proper environment
+	args := []string{"-S", tmuxSocket, "new-session", "-d", "-s", name, "-c", workDir, "/bin/zsh", "-l", "-c", cccCmd}
+
+	cmd := exec.Command(tmuxPath, args...)
+	return cmd.Run()
+}
+
+// runClaudeRaw runs claude directly (used inside tmux sessions)
+func runClaudeRaw(continueSession bool) error {
+	if claudePath == "" {
+		return fmt.Errorf("claude binary not found")
+	}
+
+	args := []string{"--dangerously-skip-permissions"}
+	if continueSession {
+		args = append(args, "-c")
+	}
+
+	cmd := exec.Command(claudePath, args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	return cmd.Run()
+}
+
+// startSession creates/attaches to a tmux session with Telegram topic
+func startSession(continueSession bool) error {
+	// Get current directory name as session name
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	name := filepath.Base(cwd)
+	tmuxName := "claude-" + name
+
+	// Load config to check/create topic
+	config, err := loadConfig()
+	if err != nil {
+		// No config, just run claude directly
+		return runClaudeRaw(continueSession)
+	}
+
+	// Create topic if it doesn't exist and we have a group configured
+	if config.GroupID != 0 {
+		if _, exists := config.Sessions[name]; !exists {
+			topicID, err := createForumTopic(config, name)
+			if err == nil {
+				config.Sessions[name] = topicID
+				saveConfig(config)
+				fmt.Printf("📱 Created Telegram topic: %s\n", name)
+			}
+		}
+	}
+
+	// Check if tmux session exists
+	if tmuxSessionExists(tmuxName) {
+		// Check if we're already inside tmux
+		if os.Getenv("TMUX") != "" {
+			// Inside tmux: switch to the session
+			cmd := exec.Command(tmuxPath, "-S", tmuxSocket, "switch-client", "-t", tmuxName)
+			cmd.Stdin = os.Stdin
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			return cmd.Run()
+		}
+		// Outside tmux: attach to existing session
+		cmd := exec.Command(tmuxPath, "-S", tmuxSocket, "attach-session", "-t", tmuxName)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+
+	// Create new tmux session and attach
+	if err := createTmuxSession(tmuxName, cwd, continueSession); err != nil {
+		return err
+	}
+
+	// Check if we're already inside tmux
+	if os.Getenv("TMUX") != "" {
+		cmd := exec.Command(tmuxPath, "-S", tmuxSocket, "switch-client", "-t", tmuxName)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+	cmd := exec.Command(tmuxPath, "-S", tmuxSocket, "attach-session", "-t", tmuxName)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func sendToTmux(session string, text string) error {
+	// Send text literally
+	cmd := exec.Command(tmuxPath, "-S", tmuxSocket, "send-keys", "-t", session, "-l", text)
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+
+	// Send Enter twice (Claude Code needs double Enter)
+	time.Sleep(50 * time.Millisecond)
+	cmd = exec.Command(tmuxPath, "-S", tmuxSocket, "send-keys", "-t", session, "C-m")
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	time.Sleep(50 * time.Millisecond)
+	cmd = exec.Command(tmuxPath, "-S", tmuxSocket, "send-keys", "-t", session, "C-m")
+	return cmd.Run()
+}
+
+func killTmuxSession(name string) error {
+	cmd := exec.Command(tmuxPath, "-S", tmuxSocket, "kill-session", "-t", name)
+	return cmd.Run()
+}
+
+func listTmuxSessions() ([]string, error) {
+	cmd := exec.Command(tmuxPath, "-S", tmuxSocket, "list-sessions", "-F", "#{session_name}")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	var sessions []string
+	scanner := bufio.NewScanner(bytes.NewReader(out))
+	for scanner.Scan() {
+		name := scanner.Text()
+		if strings.HasPrefix(name, "claude-") {
+			sessions = append(sessions, strings.TrimPrefix(name, "claude-"))
+		}
+	}
+	return sessions, nil
+}
+
+// Session management
+
+func sessionName(name string) string {
+	return "claude-" + name
+}
+
+func createSession(config *Config, name string) error {
+	// Check if session already exists
+	if _, exists := config.Sessions[name]; exists {
+		return fmt.Errorf("session '%s' already exists", name)
+	}
+
+	// Create Telegram topic
+	topicID, err := createForumTopic(config, name)
+	if err != nil {
+		return fmt.Errorf("failed to create topic: %w", err)
+	}
+
+	// Create tmux session
+	home, _ := os.UserHomeDir()
+	workDir := filepath.Join(home, name)
+	if _, err := os.Stat(workDir); os.IsNotExist(err) {
+		workDir = home // Fall back to home if folder doesn't exist
+	}
+
+	if err := createTmuxSession(sessionName(name), workDir, false); err != nil {
+		return fmt.Errorf("failed to create tmux session: %w", err)
+	}
+
+	// Save mapping
+	config.Sessions[name] = topicID
+	if err := saveConfig(config); err != nil {
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+
+	return nil
+}
+
+func killSession(config *Config, name string) error {
+	if _, exists := config.Sessions[name]; !exists {
+		return fmt.Errorf("session '%s' not found", name)
+	}
+
+	// Kill tmux session
+	killTmuxSession(sessionName(name))
+
+	// Remove from config
+	delete(config.Sessions, name)
+	saveConfig(config)
+
+	return nil
+}
+
+func getSessionByTopic(config *Config, topicID int64) string {
+	for name, tid := range config.Sessions {
+		if tid == topicID {
+			return name
+		}
+	}
+	return ""
+}
+
+// Hook handling
+
+func handleHook() error {
+	config, err := loadConfig()
+	if err != nil {
+		return nil // No config, skip notification
+	}
+
+	// Read hook data from stdin
+	var hookData HookData
+	decoder := json.NewDecoder(os.Stdin)
+	if err := decoder.Decode(&hookData); err != nil {
+		return nil // No JSON data, skip notification
+	}
+
+	// Find session by matching cwd suffix
+	var sessionName string
+	var topicID int64
+	home, _ := os.UserHomeDir()
+	for name, tid := range config.Sessions {
+		expectedPath := filepath.Join(home, name)
+		if hookData.Cwd == expectedPath || strings.HasSuffix(hookData.Cwd, "/"+name) {
+			sessionName = name
+			topicID = tid
+			break
+		}
+	}
+	if sessionName == "" || config.GroupID == 0 {
+		return nil // No topic for this session, skip notification
+	}
+
+	// Read last message from transcript
+	lastMessage := "Session ended"
+	if hookData.TranscriptPath != "" {
+		if msg := getLastAssistantMessage(hookData.TranscriptPath); msg != "" {
+			lastMessage = msg
+		}
+	}
+
+	// Truncate if too long
+	if len(lastMessage) > 500 {
+		lastMessage = lastMessage[:500] + "..."
+	}
+
+	return sendMessage(config, config.GroupID, topicID, fmt.Sprintf("✅ %s\n\n%s", sessionName, lastMessage))
+}
+
+func getLastAssistantMessage(transcriptPath string) string {
+	file, err := os.Open(transcriptPath)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+
+	var lastMessage string
+	scanner := bufio.NewScanner(file)
+	// Increase buffer size for large lines
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
+	for scanner.Scan() {
+		var entry map[string]interface{}
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+			continue
+		}
+		if entry["type"] == "assistant" {
+			if msg, ok := entry["message"].(map[string]interface{}); ok {
+				if content, ok := msg["content"].([]interface{}); ok {
+					for _, c := range content {
+						if block, ok := c.(map[string]interface{}); ok {
+							if block["type"] == "text" {
+								if text, ok := block["text"].(string); ok {
+									lastMessage = text
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return lastMessage
+}
+
+// Install hook in Claude settings
+
+func installHook() error {
+	home, _ := os.UserHomeDir()
+	settingsPath := filepath.Join(home, ".claude", "settings.json")
+	cccPath := filepath.Join(home, "bin", "ccc")
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		return fmt.Errorf("failed to read settings.json: %w", err)
+	}
+
+	var settings map[string]interface{}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return fmt.Errorf("failed to parse settings.json: %w", err)
+	}
+
+	// Create the Stop hook
+	stopHook := map[string]interface{}{
+		"type":    "command",
+		"command": cccPath + " hook",
+	}
+
+	hooks, ok := settings["hooks"].(map[string]interface{})
+	if !ok {
+		hooks = make(map[string]interface{})
+	}
+	hooks["Stop"] = []interface{}{stopHook}
+	settings["hooks"] = hooks
+
+	newData, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal settings: %w", err)
+	}
+
+	if err := os.WriteFile(settingsPath, newData, 0600); err != nil {
+		return fmt.Errorf("failed to write settings.json: %w", err)
+	}
+
+	fmt.Println("✅ Claude hook installed!")
+	return nil
+}
+
+// Bot commands
+
+func setBotCommands(botToken string) {
+	commands := `{
+		"commands": [
+			{"command": "ping", "description": "Check if bot is alive"},
+			{"command": "away", "description": "Toggle away mode"},
+			{"command": "new", "description": "Create/restart session: /new <name>"},
+			{"command": "kill", "description": "Kill session: /kill <name>"},
+			{"command": "list", "description": "List active sessions"},
+			{"command": "c", "description": "Execute shell command: /c <cmd>"}
+		]
+	}`
+
+	resp, err := http.Post(
+		fmt.Sprintf("https://api.telegram.org/bot%s/setMyCommands", botToken),
+		"application/json",
+		strings.NewReader(commands),
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to set bot commands: %v\n", err)
+		return
+	}
+	resp.Body.Close()
+}
+
+// Execute shell command
+
+func executeCommand(cmdStr string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "bash", "-c", cmdStr)
+	cmd.Dir, _ = os.UserHomeDir()
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+
+	output := stdout.String()
+	if stderr.Len() > 0 {
+		if output != "" {
+			output += "\n"
+		}
+		output += stderr.String()
+	}
+
+	if output == "" {
+		if err != nil {
+			output = fmt.Sprintf("Error: %v", err)
+		} else {
+			output = "(no output)"
+		}
+	}
+
+	return strings.TrimSpace(output), err
+}
+
+// One-shot Claude run (for private chat)
+
+func runClaude(prompt string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	home, _ := os.UserHomeDir()
+	workDir := home
+
+	words := strings.Fields(prompt)
+	if len(words) > 0 {
+		firstWord := words[0]
+		potentialDir := filepath.Join(home, firstWord)
+		if info, err := os.Stat(potentialDir); err == nil && info.IsDir() {
+			workDir = potentialDir
+			prompt = strings.TrimSpace(strings.TrimPrefix(prompt, firstWord))
+			if prompt == "" {
+				return "Error: no prompt provided after directory name", nil
+			}
+		}
+	}
+
+	if claudePath == "" {
+		return "Error: claude binary not found", fmt.Errorf("claude not found")
+	}
+	cmd := exec.CommandContext(ctx, claudePath, "--dangerously-skip-permissions", "-p", prompt)
+	cmd.Dir = workDir
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+
+	output := stdout.String()
+	if stderr.Len() > 0 {
+		if output != "" {
+			output += "\n"
+		}
+		output += stderr.String()
+	}
+
+	if output == "" {
+		if err != nil {
+			output = fmt.Sprintf("Error: %v", err)
+		} else {
+			output = "(no output)"
+		}
+	}
+
+	return strings.TrimSpace(output), err
+}
+
+// Setup
+
+func setup(botToken string) error {
+	config := &Config{BotToken: botToken, Sessions: make(map[string]int64)}
+
+	fmt.Println("Bot token saved. Now send any message to your bot in Telegram...")
+	fmt.Println("Waiting for your message...")
+
+	offset := 0
+	for {
+		resp, err := http.Get(fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?offset=%d&timeout=30", botToken, offset))
+		if err != nil {
+			return fmt.Errorf("failed to get updates: %w", err)
+		}
+
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		var updates TelegramUpdate
+		if err := json.Unmarshal(body, &updates); err != nil {
+			return fmt.Errorf("failed to parse response: %w", err)
+		}
+
+		if !updates.OK {
+			return fmt.Errorf("telegram API error - check your bot token")
+		}
+
+		for _, update := range updates.Result {
+			offset = update.UpdateID + 1
+			if update.Message.Chat.ID != 0 {
+				config.ChatID = update.Message.Chat.ID
+				if err := saveConfig(config); err != nil {
+					return fmt.Errorf("failed to save config: %w", err)
+				}
+				fmt.Printf("Got your chat ID: %d (from @%s)\n", config.ChatID, update.Message.From.Username)
+				fmt.Println("Setup complete!")
+				fmt.Println("\nNext steps:")
+				fmt.Println("1. Create a group and enable Topics (group settings)")
+				fmt.Println("2. Add the bot to the group as admin")
+				fmt.Println("3. Send a message in the group")
+				fmt.Println("4. Run: ccc setgroup")
+				return nil
+			}
+		}
+
+		time.Sleep(time.Second)
+	}
+}
+
+func setGroup(config *Config) error {
+	fmt.Println("Send a message in the group where you want to use topics...")
+	fmt.Println("(Make sure Topics are enabled in group settings)")
+
+	offset := 0
+	client := &http.Client{Timeout: 35 * time.Second}
+
+	for {
+		reqURL := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?offset=%d&timeout=30", config.BotToken, offset)
+		resp, err := client.Get(reqURL)
+		if err != nil {
+			return err
+		}
+
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		var updates TelegramUpdate
+		if err := json.Unmarshal(body, &updates); err != nil {
+			continue
+		}
+
+		for _, update := range updates.Result {
+			offset = update.UpdateID + 1
+			chat := update.Message.Chat
+			if chat.Type == "supergroup" && update.Message.From.ID == config.ChatID {
+				config.GroupID = chat.ID
+				if err := saveConfig(config); err != nil {
+					return err
+				}
+				fmt.Printf("Group set: %d\n", chat.ID)
+				fmt.Println("You can now create sessions with: /new <name>")
+				return nil
+			}
+		}
+	}
+}
+
+// Send notification (only if away)
+
+func send(message string) error {
+	config, err := loadConfig()
+	if err != nil {
+		return fmt.Errorf("not configured. Run: ccc setup <bot_token>")
+	}
+
+	if !config.Away {
+		fmt.Println("Away mode off, skipping notification.")
+		return nil
+	}
+
+	return sendMessage(config, config.ChatID, 0, message)
+}
+
+// Main listen loop
+
+func listen() error {
+	config, err := loadConfig()
+	if err != nil {
+		return fmt.Errorf("not configured. Run: ccc setup <bot_token>")
+	}
+
+	fmt.Printf("Bot listening... (chat: %d, group: %d)\n", config.ChatID, config.GroupID)
+	fmt.Printf("Active sessions: %d\n", len(config.Sessions))
+	fmt.Println("Press Ctrl+C to stop")
+
+	setBotCommands(config.BotToken)
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	offset := 0
+	client := &http.Client{Timeout: 35 * time.Second}
+
+	go func() {
+		<-sigChan
+		fmt.Println("\nShutting down...")
+		os.Exit(0)
+	}()
+
+	for {
+		reqURL := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?offset=%d&timeout=30", config.BotToken, offset)
+		resp, err := client.Get(reqURL)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Network error: %v (retrying...)\n", err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		var updates TelegramUpdate
+		if err := json.Unmarshal(body, &updates); err != nil {
+			fmt.Fprintf(os.Stderr, "Parse error: %v\n", err)
+			time.Sleep(time.Second)
+			continue
+		}
+
+		if !updates.OK {
+			fmt.Fprintf(os.Stderr, "Telegram API error\n")
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		for _, update := range updates.Result {
+			offset = update.UpdateID + 1
+			msg := update.Message
+
+			// Only accept from authorized user
+			if msg.From.ID != config.ChatID {
+				continue
+			}
+
+			text := strings.TrimSpace(msg.Text)
+			if text == "" {
+				continue
+			}
+
+			// Strip bot mention from commands (e.g., /ping@botname -> /ping)
+			if strings.HasPrefix(text, "/") {
+				if idx := strings.Index(text, "@"); idx != -1 {
+					spaceIdx := strings.Index(text, " ")
+					if spaceIdx == -1 || idx < spaceIdx {
+						text = text[:idx] + text[strings.Index(text+" ", " "):]
+					}
+				}
+				text = strings.TrimSpace(text)
+			}
+
+			chatID := msg.Chat.ID
+			threadID := msg.MessageThreadID
+			isGroup := msg.Chat.Type == "supergroup"
+
+			fmt.Printf("[%s] @%s: %s\n", msg.Chat.Type, msg.From.Username, text)
+
+			// Handle commands
+			if text == "/ping" {
+				sendMessage(config, chatID, threadID, "pong!")
+				continue
+			}
+
+			if text == "/away" {
+				config.Away = !config.Away
+				saveConfig(config)
+				if config.Away {
+					sendMessage(config, chatID, threadID, "🚶 Away mode ON")
+				} else {
+					sendMessage(config, chatID, threadID, "🏠 Away mode OFF")
+				}
+				continue
+			}
+
+			if text == "/list" {
+				sessions, _ := listTmuxSessions()
+				if len(sessions) == 0 {
+					sendMessage(config, chatID, threadID, "No active sessions")
+				} else {
+					sendMessage(config, chatID, threadID, "Sessions:\n• "+strings.Join(sessions, "\n• "))
+				}
+				continue
+			}
+
+			if strings.HasPrefix(text, "/kill ") {
+				name := strings.TrimPrefix(text, "/kill ")
+				name = strings.TrimSpace(name)
+				if err := killSession(config, name); err != nil {
+					sendMessage(config, chatID, threadID, fmt.Sprintf("❌ %v", err))
+				} else {
+					sendMessage(config, chatID, threadID, fmt.Sprintf("🗑️ Session '%s' killed", name))
+					config, _ = loadConfig()
+				}
+				continue
+			}
+
+			if strings.HasPrefix(text, "/c ") {
+				cmdStr := strings.TrimPrefix(text, "/c ")
+				output, err := executeCommand(cmdStr)
+				if err != nil {
+					output = fmt.Sprintf("⚠️ %s\n\nExit: %v", output, err)
+				}
+				sendMessage(config, chatID, threadID, output)
+				continue
+			}
+
+			// /new command - create new session or restart existing
+			if strings.HasPrefix(text, "/new") && isGroup {
+				config, _ = loadConfig()
+				arg := strings.TrimSpace(strings.TrimPrefix(text, "/new"))
+
+				// /new <name> - create brand new session + topic
+				if arg != "" {
+					// Check if session already exists
+					if _, exists := config.Sessions[arg]; exists {
+						sendMessage(config, chatID, threadID, fmt.Sprintf("⚠️ Session '%s' already exists", arg))
+						continue
+					}
+					// Create Telegram topic
+					topicID, err := createForumTopic(config, arg)
+					if err != nil {
+						sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Failed to create topic: %v", err))
+						continue
+					}
+					// Save mapping
+					config.Sessions[arg] = topicID
+					saveConfig(config)
+					// Find work directory
+					home, _ := os.UserHomeDir()
+					workDir := filepath.Join(home, arg)
+					if _, err := os.Stat(workDir); os.IsNotExist(err) {
+						workDir = home
+					}
+					// Create tmux session
+					tmuxName := "claude-" + arg
+					if err := createTmuxSession(tmuxName, workDir, false); err != nil {
+						sendMessage(config, config.GroupID, topicID, fmt.Sprintf("❌ Failed to start tmux: %v", err))
+					} else {
+						// Verify session is actually running
+						time.Sleep(500 * time.Millisecond)
+						if tmuxSessionExists(tmuxName) {
+							sendMessage(config, config.GroupID, topicID, fmt.Sprintf("🚀 Session '%s' started!\n\nSend messages here to interact with Claude.", arg))
+						} else {
+							sendMessage(config, config.GroupID, topicID, fmt.Sprintf("⚠️ Session '%s' created but died immediately. Check if ~/bin/ccc works.", arg))
+						}
+					}
+					continue
+				}
+
+				// /new without args - restart session in current topic
+				if threadID > 0 {
+					sessionName := getSessionByTopic(config, threadID)
+					if sessionName == "" {
+						sendMessage(config, chatID, threadID, "❌ No session mapped to this topic. Use /new <name> to create one.")
+						continue
+					}
+					tmuxName := "claude-" + sessionName
+					if tmuxSessionExists(tmuxName) {
+						sendMessage(config, chatID, threadID, "⚠️ Session already running")
+						continue
+					}
+					// Find work directory
+					home, _ := os.UserHomeDir()
+					workDir := filepath.Join(home, sessionName)
+					if _, err := os.Stat(workDir); os.IsNotExist(err) {
+						workDir = home
+					}
+					if err := createTmuxSession(tmuxName, workDir, false); err != nil {
+						sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Failed to start: %v", err))
+					} else {
+						time.Sleep(500 * time.Millisecond)
+						if tmuxSessionExists(tmuxName) {
+							sendMessage(config, chatID, threadID, fmt.Sprintf("🚀 Session '%s' started", sessionName))
+						} else {
+							sendMessage(config, chatID, threadID, fmt.Sprintf("⚠️ Session died immediately"))
+						}
+					}
+				} else {
+					sendMessage(config, chatID, threadID, "Usage: /new <name> to create a new session")
+				}
+				continue
+			}
+
+			// Check if message is in a topic (interactive session)
+			if isGroup && threadID > 0 {
+				// Reload config to get latest sessions
+				config, _ = loadConfig()
+				sessionName := getSessionByTopic(config, threadID)
+				if sessionName != "" {
+					// Send to tmux session
+					tmuxName := "claude-" + sessionName
+					if tmuxSessionExists(tmuxName) {
+						if err := sendToTmux(tmuxName, text); err != nil {
+							sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Failed to send: %v", err))
+						}
+					} else {
+						sendMessage(config, chatID, threadID, "⚠️ Session not running. Use /new to restart.")
+					}
+					continue
+				}
+			}
+
+			// Private chat: run one-shot Claude
+			if !isGroup {
+				sendMessage(config, chatID, threadID, "🤖 Running Claude...")
+
+				prompt := text
+				if msg.ReplyToMessage != nil && msg.ReplyToMessage.Text != "" {
+					origText := msg.ReplyToMessage.Text
+					origWords := strings.Fields(origText)
+					if len(origWords) > 0 {
+						home, _ := os.UserHomeDir()
+						potentialDir := filepath.Join(home, origWords[0])
+						if info, err := os.Stat(potentialDir); err == nil && info.IsDir() {
+							prompt = origWords[0] + " " + text
+						}
+					}
+					prompt = fmt.Sprintf("Original message:\n%s\n\nReply:\n%s", origText, prompt)
+				}
+
+				go func(p string, cid int64) {
+					defer func() {
+						if r := recover(); r != nil {
+							sendMessage(config, cid, 0, fmt.Sprintf("💥 Panic: %v", r))
+						}
+					}()
+					output, err := runClaude(p)
+					if err != nil {
+						if strings.Contains(err.Error(), "context deadline exceeded") {
+							output = fmt.Sprintf("⏱️ Timeout (10min)\n\n%s", output)
+						} else {
+							output = fmt.Sprintf("⚠️ %s\n\nExit: %v", output, err)
+						}
+					}
+					sendMessage(config, cid, 0, output)
+				}(prompt, chatID)
+			}
+		}
+	}
+}
+
+func printHelp() {
+	fmt.Printf(`ccc - Claude Code Controller v%s
+
+A tool to manage Claude Code sessions via Telegram and tmux.
+
+USAGE:
+    ccc                     Start/attach tmux session in current directory
+    ccc -c                  Continue previous session
+    ccc <message>           Send notification (if away mode is on)
+
+COMMANDS:
+    setup <token>           Setup bot with Telegram bot token
+    setgroup                Configure Telegram group for topics
+    listen                  Start the Telegram bot listener
+    install                 Install Claude hook for notifications
+    run                     Run Claude directly (used by tmux sessions)
+    hook                    Handle Claude hook (internal)
+
+TELEGRAM COMMANDS:
+    /ping                   Check if bot is alive
+    /away                   Toggle away mode
+    /new <name>             Create new session with topic
+    /new                    Restart session in current topic
+    /kill <name>            Kill a session
+    /list                   List active sessions
+    /c <cmd>                Execute shell command
+
+FLAGS:
+    -h, --help              Show this help
+    -v, --version           Show version
+
+For more info: https://github.com/kidandcat/ccc
+`, version)
+}
+
+func main() {
+	// Handle flags
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "-h", "--help", "help":
+			printHelp()
+			return
+		case "-v", "--version", "version":
+			fmt.Printf("ccc version %s\n", version)
+			return
+		}
+	}
+
+	if len(os.Args) < 2 {
+		// No args: start/attach tmux session with topic
+		if err := startSession(false); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Check for -c flag (continue) as first arg
+	if os.Args[1] == "-c" {
+		if err := startSession(true); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
+
+	switch os.Args[1] {
+	case "run":
+		// Run claude directly (used inside tmux sessions)
+		continueSession := len(os.Args) > 2 && os.Args[2] == "-c"
+		if err := runClaudeRaw(continueSession); err != nil {
+			os.Exit(1)
+		}
+		return
+	case "setup":
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: ccc setup <bot_token>")
+			os.Exit(1)
+		}
+		if err := setup(os.Args[2]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "setgroup":
+		config, err := loadConfig()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if err := setGroup(config); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "listen":
+		if err := listen(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "hook":
+		if err := handleHook(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "install":
+		if err := installHook(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+	default:
+		if err := send(strings.Join(os.Args[1:], " ")); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	}
+}

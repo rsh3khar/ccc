@@ -932,6 +932,19 @@ func send(message string) error {
 		return nil
 	}
 
+	// Try to send to session topic if we're in a session directory
+	if config.GroupID != 0 {
+		cwd, _ := os.Getwd()
+		home, _ := os.UserHomeDir()
+		for name, topicID := range config.Sessions {
+			expectedPath := filepath.Join(home, name)
+			if cwd == expectedPath || strings.HasSuffix(cwd, "/"+name) {
+				return sendMessage(config, config.GroupID, topicID, message)
+			}
+		}
+	}
+
+	// Fallback to private chat
 	return sendMessage(config, config.ChatID, 0, message)
 }
 

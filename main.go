@@ -919,6 +919,155 @@ func setGroup(config *Config) error {
 	}
 }
 
+// Doctor - check all dependencies
+
+func doctor() {
+	fmt.Println("🩺 ccc doctor")
+	fmt.Println("=============")
+	fmt.Println()
+
+	allGood := true
+
+	// Check tmux
+	fmt.Print("tmux.............. ")
+	if tmuxPath != "" {
+		fmt.Printf("✅ %s\n", tmuxPath)
+	} else {
+		fmt.Println("❌ not found")
+		fmt.Println("   Install: brew install tmux (macOS) or apt install tmux (Linux)")
+		allGood = false
+	}
+
+	// Check claude
+	fmt.Print("claude............ ")
+	if claudePath != "" {
+		fmt.Printf("✅ %s\n", claudePath)
+	} else {
+		fmt.Println("❌ not found")
+		fmt.Println("   Install: npm install -g @anthropic-ai/claude-code")
+		allGood = false
+	}
+
+	// Check ccc is in ~/bin (for hooks)
+	fmt.Print("ccc in ~/bin...... ")
+	home, _ := os.UserHomeDir()
+	expectedCccPath := filepath.Join(home, "bin", "ccc")
+	if _, err := os.Stat(expectedCccPath); err == nil {
+		fmt.Printf("✅ %s\n", expectedCccPath)
+	} else {
+		fmt.Println("❌ not found")
+		fmt.Println("   Run: mkdir -p ~/bin && cp ccc ~/bin/")
+		allGood = false
+	}
+
+	// Check config
+	fmt.Print("config............ ")
+	config, err := loadConfig()
+	if err != nil {
+		fmt.Println("❌ not found")
+		fmt.Println("   Run: ccc setup <bot_token>")
+		allGood = false
+	} else {
+		fmt.Printf("✅ %s\n", getConfigPath())
+
+		// Check bot token
+		fmt.Print("  bot_token....... ")
+		if config.BotToken != "" {
+			fmt.Println("✅ configured")
+		} else {
+			fmt.Println("❌ missing")
+			allGood = false
+		}
+
+		// Check chat ID
+		fmt.Print("  chat_id......... ")
+		if config.ChatID != 0 {
+			fmt.Printf("✅ %d\n", config.ChatID)
+		} else {
+			fmt.Println("❌ missing")
+			allGood = false
+		}
+
+		// Check group ID (optional)
+		fmt.Print("  group_id........ ")
+		if config.GroupID != 0 {
+			fmt.Printf("✅ %d\n", config.GroupID)
+		} else {
+			fmt.Println("⚠️  not set (optional, run: ccc setgroup)")
+		}
+	}
+
+	// Check Claude hook
+	fmt.Print("claude hook....... ")
+	settingsPath := filepath.Join(home, ".claude", "settings.json")
+	if data, err := os.ReadFile(settingsPath); err == nil {
+		var settings map[string]interface{}
+		if json.Unmarshal(data, &settings) == nil {
+			if hooks, ok := settings["hooks"].(map[string]interface{}); ok {
+				if _, hasStop := hooks["Stop"]; hasStop {
+					fmt.Println("✅ installed")
+				} else {
+					fmt.Println("❌ not installed")
+					fmt.Println("   Run: ccc install")
+					allGood = false
+				}
+			} else {
+				fmt.Println("❌ not installed")
+				fmt.Println("   Run: ccc install")
+				allGood = false
+			}
+		} else {
+			fmt.Println("⚠️  settings.json parse error")
+		}
+	} else {
+		fmt.Println("⚠️  ~/.claude/settings.json not found")
+	}
+
+	// Check service
+	fmt.Print("service........... ")
+	if _, err := os.Stat("/Library"); err == nil {
+		// macOS - check launchd
+		plistPath := filepath.Join(home, "Library", "LaunchAgents", "com.ccc.plist")
+		if _, err := os.Stat(plistPath); err == nil {
+			// Check if loaded
+			cmd := exec.Command("launchctl", "list", "com.ccc")
+			if cmd.Run() == nil {
+				fmt.Println("✅ running (launchd)")
+			} else {
+				fmt.Println("⚠️  installed but not running")
+				fmt.Println("   Run: launchctl load ~/Library/LaunchAgents/com.ccc.plist")
+			}
+		} else {
+			fmt.Println("❌ not installed")
+			fmt.Println("   Run: ccc setup <token> (or manually create plist)")
+			allGood = false
+		}
+	} else {
+		// Linux - check systemd
+		cmd := exec.Command("systemctl", "--user", "is-active", "ccc")
+		if output, err := cmd.Output(); err == nil && strings.TrimSpace(string(output)) == "active" {
+			fmt.Println("✅ running (systemd)")
+		} else {
+			servicePath := filepath.Join(home, ".config", "systemd", "user", "ccc.service")
+			if _, err := os.Stat(servicePath); err == nil {
+				fmt.Println("⚠️  installed but not running")
+				fmt.Println("   Run: systemctl --user start ccc")
+			} else {
+				fmt.Println("❌ not installed")
+				fmt.Println("   Run: ccc setup <token> (or manually create service)")
+				allGood = false
+			}
+		}
+	}
+
+	fmt.Println()
+	if allGood {
+		fmt.Println("✅ All checks passed!")
+	} else {
+		fmt.Println("❌ Some issues found. Fix them and run 'ccc doctor' again.")
+	}
+}
+
 // Send notification (only if away)
 
 func send(message string) error {
@@ -1226,6 +1375,7 @@ USAGE:
 
 COMMANDS:
     setup <token>           Complete setup (bot, hook, service - all in one!)
+    doctor                  Check all dependencies and configuration
     setgroup                Configure Telegram group for topics (if skipped during setup)
     listen                  Start the Telegram bot listener manually
     install                 Install Claude hook manually
@@ -1295,6 +1445,9 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+
+	case "doctor":
+		doctor()
 
 	case "setgroup":
 		config, err := loadConfig()

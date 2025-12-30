@@ -16,6 +16,8 @@ Ever wanted to:
 
 ## Features
 
+- **100% Self-Hosted** - Runs entirely on your machine, no third-party servers
+- **Privacy First** - Your code and conversations never leave your computer (except to Telegram for messages you send)
 - **Remote Control** - Start and manage Claude Code sessions from Telegram
 - **Multi-Session** - Run multiple concurrent sessions, each with its own Telegram topic
 - **Seamless Handoff** - Start on phone, continue on PC (or vice versa)
@@ -275,13 +277,28 @@ Config is stored in `~/.ccc.json`:
 3. Claude Code runs inside tmux with a hook that sends responses back
 4. You can attach to any session from terminal with `ccc`
 
-## Security
+## Privacy & Security
+
+### Privacy
+
+**ccc runs 100% on your machine.** There are no external servers, no analytics, no data collection.
+
+- Your code stays on your computer
+- Claude Code runs locally via Anthropic's official CLI
+- Only messages you explicitly send go through Telegram
+- No telemetry, no tracking, no cloud dependencies
+
+The only external communication is:
+1. **Telegram API** - For sending/receiving your messages (your bot, your control)
+2. **Anthropic API** - Claude Code's own connection (handled by Claude Code itself)
+
+### Security
 
 - **Authorization**: Bot only accepts messages from the configured `chat_id`
 - **Config permissions**: `~/.ccc.json` is created with `0600` (owner-only)
-- **Claude permissions**: Uses `--dangerously-skip-permissions` for automation
+- **Open source**: Full code transparency, audit it yourself
 
-> ⚠️ Understand the implications of `--dangerously-skip-permissions` before using in production
+> ⚠️ Note: Uses `--dangerously-skip-permissions` for automation - understand the implications
 
 ## Troubleshooting
 

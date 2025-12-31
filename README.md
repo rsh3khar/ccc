@@ -63,9 +63,10 @@ Ever wanted to:
 ```bash
 git clone https://github.com/kidandcat/ccc.git
 cd ccc
-go build -o ccc
-sudo mv ccc /usr/local/bin/  # or ~/bin/
+make install
 ```
+
+This builds, signs (on macOS), and installs to `~/bin/`.
 
 ### Verify Installation
 
@@ -73,6 +74,11 @@ sudo mv ccc /usr/local/bin/  # or ~/bin/
 ccc --version
 # ccc version 1.0.0
 ```
+
+> **macOS troubleshooting**: If you get `killed` when running ccc, the binary needs to be signed:
+> ```bash
+> codesign -s - ~/bin/ccc
+> ```
 
 ## Quick Start
 

@@ -498,11 +498,6 @@ func handleHook() error {
 		}
 	}
 
-	// Truncate if too long
-	if len(lastMessage) > 500 {
-		lastMessage = lastMessage[:500] + "..."
-	}
-
 	return sendMessage(config, config.GroupID, topicID, fmt.Sprintf("✅ %s\n\n%s", sessionName, lastMessage))
 }
 

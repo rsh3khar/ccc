@@ -572,15 +572,39 @@ func handleHook() error {
 }
 
 func handlePermissionHook() error {
-	config, err := loadConfig()
-	if err != nil {
+	// Recover from any panic - hooks must never crash
+	defer func() {
+		recover()
+	}()
+
+	// Read stdin with timeout
+	stdinData := make(chan []byte, 1)
+	go func() {
+		defer func() { recover() }()
+		data, _ := io.ReadAll(os.Stdin)
+		stdinData <- data
+	}()
+
+	var rawData []byte
+	select {
+	case rawData = <-stdinData:
+	case <-time.After(2 * time.Second):
+		return nil // Timeout, exit silently
+	}
+
+	if len(rawData) == 0 {
 		return nil
 	}
 
-	// Read hook data from stdin
+	// Parse JSON - ignore errors
 	var hookData HookData
-	decoder := json.NewDecoder(os.Stdin)
-	if err := decoder.Decode(&hookData); err != nil {
+	if err := json.Unmarshal(rawData, &hookData); err != nil {
+		return nil
+	}
+
+	// Load config - ignore errors
+	config, err := loadConfig()
+	if err != nil || config == nil {
 		return nil
 	}
 
@@ -589,6 +613,9 @@ func handlePermissionHook() error {
 	var topicID int64
 	home, _ := os.UserHomeDir()
 	for name, tid := range config.Sessions {
+		if name == "" {
+			continue
+		}
 		expectedPath := filepath.Join(home, name)
 		if hookData.Cwd == expectedPath || strings.HasSuffix(hookData.Cwd, "/"+name) {
 			sessionName = name
@@ -596,34 +623,57 @@ func handlePermissionHook() error {
 			break
 		}
 	}
+
 	if sessionName == "" || config.GroupID == 0 {
 		return nil
 	}
 
-	// Handle AskUserQuestion (plan approval, etc.)
+	// Handle AskUserQuestion (plan approval, etc.) - in goroutine to not block
 	if hookData.ToolName == "AskUserQuestion" && len(hookData.ToolInput.Questions) > 0 {
-		for qIdx, q := range hookData.ToolInput.Questions {
-			// Build message
-			msg := fmt.Sprintf("❓ %s\n\n%s", q.Header, q.Question)
+		go func() {
+			defer func() { recover() }()
+			for qIdx, q := range hookData.ToolInput.Questions {
+				if q.Question == "" {
+					continue
+				}
+				// Build message
+				msg := fmt.Sprintf("❓ %s\n\n%s", q.Header, q.Question)
 
-			// Build inline keyboard buttons
-			var buttons [][]InlineKeyboardButton
-			for i, opt := range q.Options {
-				// Callback data format: session:questionIndex:optionIndex
-				callbackData := fmt.Sprintf("%s:%d:%d", sessionName, qIdx, i)
-				buttons = append(buttons, []InlineKeyboardButton{
-					{Text: opt.Label, CallbackData: callbackData},
-				})
+				// Build inline keyboard buttons
+				var buttons [][]InlineKeyboardButton
+				for i, opt := range q.Options {
+					if opt.Label == "" {
+						continue
+					}
+					// Callback data format: session:questionIndex:optionIndex
+					// Telegram limits callback_data to 64 bytes
+					callbackData := fmt.Sprintf("%s:%d:%d", sessionName, qIdx, i)
+					if len(callbackData) > 64 {
+						callbackData = callbackData[:64]
+					}
+					buttons = append(buttons, []InlineKeyboardButton{
+						{Text: opt.Label, CallbackData: callbackData},
+					})
+				}
+
+				if len(buttons) > 0 {
+					sendMessageWithKeyboard(config, config.GroupID, topicID, msg, buttons)
+				}
 			}
-
-			sendMessageWithKeyboard(config, config.GroupID, topicID, msg, buttons)
-		}
+		}()
 		return nil
 	}
 
-	// Generic permission request
-	msg := fmt.Sprintf("🔐 Permission requested: %s", hookData.ToolName)
-	return sendMessage(config, config.GroupID, topicID, msg)
+	// Generic permission request - in goroutine to not block
+	go func() {
+		defer func() { recover() }()
+		if hookData.ToolName != "" {
+			msg := fmt.Sprintf("🔐 Permission requested: %s", hookData.ToolName)
+			sendMessage(config, config.GroupID, topicID, msg)
+		}
+	}()
+
+	return nil
 }
 
 func getLastAssistantMessage(transcriptPath string) string {

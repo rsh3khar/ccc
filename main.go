@@ -266,7 +266,14 @@ func createTmuxSession(name string, workDir string, continueSession bool) error 
 	args := []string{"-S", tmuxSocket, "new-session", "-d", "-s", name, "-c", workDir, "/bin/zsh", "-l", "-c", cccCmd}
 
 	cmd := exec.Command(tmuxPath, args...)
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+
+	// Enable mouse mode for this session (allows scrolling)
+	exec.Command(tmuxPath, "-S", tmuxSocket, "set-option", "-t", name, "mouse", "on").Run()
+
+	return nil
 }
 
 // runClaudeRaw runs claude directly (used inside tmux sessions)

@@ -556,15 +556,19 @@ func getSessionByTopic(config *Config, topicID int64) string {
 func handleHook() error {
 	config, err := loadConfig()
 	if err != nil {
-		return nil // No config, skip notification
+		fmt.Fprintf(os.Stderr, "hook: no config\n")
+		return nil
 	}
 
 	// Read hook data from stdin
 	var hookData HookData
 	decoder := json.NewDecoder(os.Stdin)
 	if err := decoder.Decode(&hookData); err != nil {
-		return nil // No JSON data, skip notification
+		fmt.Fprintf(os.Stderr, "hook: decode error: %v\n", err)
+		return nil
 	}
+
+	fmt.Fprintf(os.Stderr, "hook: cwd=%s transcript=%s\n", hookData.Cwd, hookData.TranscriptPath)
 
 	// Find session by matching cwd suffix
 	var sessionName string
@@ -579,8 +583,11 @@ func handleHook() error {
 		}
 	}
 	if sessionName == "" || config.GroupID == 0 {
-		return nil // No topic for this session, skip notification
+		fmt.Fprintf(os.Stderr, "hook: no session found for cwd=%s\n", hookData.Cwd)
+		return nil
 	}
+
+	fmt.Fprintf(os.Stderr, "hook: session=%s topic=%d\n", sessionName, topicID)
 
 	// Read last message from transcript
 	lastMessage := "Session ended"
@@ -590,6 +597,7 @@ func handleHook() error {
 		}
 	}
 
+	fmt.Fprintf(os.Stderr, "hook: sending message to telegram\n")
 	return sendMessage(config, config.GroupID, topicID, fmt.Sprintf("✅ %s\n\n%s", sessionName, lastMessage))
 }
 
@@ -781,6 +789,63 @@ func handlePromptHook() error {
 	}
 	fmt.Fprintf(os.Stderr, "hook-prompt: sending to topic %d\n", topicID)
 	return sendMessage(config, config.GroupID, topicID, fmt.Sprintf("💬 %s", prompt))
+}
+
+func handleOutputHook() error {
+	config, err := loadConfig()
+	if err != nil {
+		return nil
+	}
+
+	rawData, _ := io.ReadAll(os.Stdin)
+	if len(rawData) == 0 {
+		return nil
+	}
+
+	var hookData HookData
+	if err := json.Unmarshal(rawData, &hookData); err != nil {
+		return nil
+	}
+
+	// Skip certain tools that don't produce interesting output
+	skipTools := map[string]bool{
+		"Read": true, "Glob": true, "Grep": true, "LSP": true,
+		"TodoWrite": true, "Task": true, "TaskOutput": true,
+	}
+	if skipTools[hookData.ToolName] {
+		return nil
+	}
+
+	// Find session
+	var topicID int64
+	home, _ := os.UserHomeDir()
+	for name, tid := range config.Sessions {
+		expectedPath := filepath.Join(home, name)
+		if hookData.Cwd == expectedPath || strings.HasSuffix(hookData.Cwd, "/"+name) {
+			topicID = tid
+			break
+		}
+	}
+
+	if topicID == 0 || config.GroupID == 0 {
+		return nil
+	}
+
+	// Send typing indicator
+	sendTypingAction(config, config.GroupID, topicID)
+
+	// Get last message from transcript
+	if hookData.TranscriptPath != "" {
+		if msg := getLastAssistantMessage(hookData.TranscriptPath); msg != "" {
+			// Truncate long messages
+			if len(msg) > 1000 {
+				msg = msg[:1000] + "..."
+			}
+			sendMessage(config, config.GroupID, topicID, msg)
+		}
+	}
+
+	return nil
 }
 
 func handleQuestionHook() error {
@@ -1898,6 +1963,12 @@ func main() {
 
 	case "hook-question":
 		if err := handleQuestionHook(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "hook-output":
+		if err := handleOutputHook(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}

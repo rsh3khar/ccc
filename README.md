@@ -22,6 +22,8 @@ Ever wanted to:
 - **Multi-Session** - Run multiple concurrent sessions, each with its own Telegram topic
 - **Seamless Handoff** - Start on phone, continue on PC (or vice versa)
 - **Notifications** - Get Claude's responses in Telegram when away
+- **Voice Messages** - Send voice messages, automatically transcribed with Whisper
+- **Image Support** - Send images to Claude for analysis
 - **tmux Integration** - Sessions persist and can be attached from any terminal
 - **One-shot Queries** - Quick Claude questions via private chat
 
@@ -53,6 +55,16 @@ Ever wanted to:
 - [tmux](https://github.com/tmux/tmux)
 - [Claude Code](https://claude.ai/claude-code) installed
 - Telegram account
+
+### Optional Dependencies
+
+- **[Whisper](https://github.com/openai/whisper)** - For voice message transcription
+  ```bash
+  # macOS
+  brew install openai-whisper
+  # or with pip
+  pip install openai-whisper
+  ```
 
 > **Windows users**: Use [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) with Ubuntu. Claude Code and ccc both work best on Linux. Install WSL, then follow the Linux instructions.
 
@@ -130,7 +142,9 @@ That's it! You're ready to control Claude Code from Telegram.
 | Command | Description |
 |---------|-------------|
 | `/new <name>` | Create new session + topic |
-| `/new` | Restart session in current topic |
+| `/new` | Restart session in current topic (kills if running) |
+| `/continue <name>` | Create new session with conversation history |
+| `/continue` | Restart session with `-c` flag (continues conversation) |
 | `/kill <name>` | Kill a session |
 | `/list` | List active sessions |
 | `/ping` | Check if bot is alive |
@@ -139,6 +153,16 @@ That's it! You're ready to control Claude Code from Telegram.
 
 **In private chat:**
 - Send any message to run a one-shot Claude query
+
+### Voice Messages & Images
+
+**Voice Messages** (requires Whisper):
+- Send a voice message in a session topic
+- Bot transcribes using Whisper and sends text to Claude
+
+**Image Attachments**:
+- Send an image in a session topic (with optional caption)
+- Image is saved and path is sent to Claude for analysis
 
 ### Example Session
 

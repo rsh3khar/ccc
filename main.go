@@ -44,6 +44,21 @@ type TelegramMessage struct {
 	} `json:"from"`
 	Text           string           `json:"text"`
 	ReplyToMessage *TelegramMessage `json:"reply_to_message,omitempty"`
+	Voice          *TelegramVoice   `json:"voice,omitempty"`
+	Photo          []TelegramPhoto  `json:"photo,omitempty"`
+	Caption        string           `json:"caption,omitempty"`
+}
+
+type TelegramVoice struct {
+	FileID   string `json:"file_id"`
+	Duration int    `json:"duration"`
+}
+
+type TelegramPhoto struct {
+	FileID   string `json:"file_id"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
+	FileSize int    `json:"file_size"`
 }
 
 // CallbackQuery represents a Telegram callback query (button press)
@@ -264,6 +279,68 @@ func splitMessage(text string, maxLen int) []string {
 	return messages
 }
 
+// Download file from Telegram
+func downloadTelegramFile(config *Config, fileID string, destPath string) error {
+	// Get file path from Telegram
+	resp, err := http.Get(fmt.Sprintf("https://api.telegram.org/bot%s/getFile?file_id=%s", config.BotToken, fileID))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			FilePath string `json:"file_path"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return err
+	}
+	if !result.OK {
+		return fmt.Errorf("failed to get file path")
+	}
+
+	// Download the file
+	fileURL := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", config.BotToken, result.Result.FilePath)
+	fileResp, err := http.Get(fileURL)
+	if err != nil {
+		return err
+	}
+	defer fileResp.Body.Close()
+
+	out, err := os.Create(destPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, fileResp.Body)
+	return err
+}
+
+// Transcribe audio file using whisper
+func transcribeAudio(audioPath string) (string, error) {
+	// Use whisper with small model for speed (full path for launchd)
+	cmd := exec.Command("/opt/homebrew/bin/whisper", audioPath, "--model", "small", "--output_format", "txt", "--output_dir", filepath.Dir(audioPath))
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+
+	// Read the transcription
+	txtPath := strings.TrimSuffix(audioPath, filepath.Ext(audioPath)) + ".txt"
+	content, err := os.ReadFile(txtPath)
+	if err != nil {
+		return "", err
+	}
+
+	// Cleanup
+	os.Remove(txtPath)
+
+	return strings.TrimSpace(string(content)), nil
+}
+
 func createForumTopic(config *Config, name string) (int64, error) {
 	if config.GroupID == 0 {
 		return 0, fmt.Errorf("no group configured. Add bot to a group with topics enabled and run: ccc setgroup")
@@ -473,14 +550,20 @@ func startSession(continueSession bool) error {
 }
 
 func sendToTmux(session string, text string) error {
+	return sendToTmuxWithDelay(session, text, 50*time.Millisecond)
+}
+
+func sendToTmuxWithDelay(session string, text string, delay time.Duration) error {
 	// Send text literally
 	cmd := exec.Command(tmuxPath, "-S", tmuxSocket, "send-keys", "-t", session, "-l", text)
 	if err := cmd.Run(); err != nil {
 		return err
 	}
 
+	// Wait for content to load (e.g., images)
+	time.Sleep(delay)
+
 	// Send Enter twice (Claude Code needs double Enter)
-	time.Sleep(50 * time.Millisecond)
 	cmd = exec.Command(tmuxPath, "-S", tmuxSocket, "send-keys", "-t", session, "C-m")
 	if err := cmd.Run(); err != nil {
 		return err
@@ -842,26 +925,33 @@ func handleOutputHook() error {
 	}
 
 	// Find session
+	var sessionName string
 	var topicID int64
 	home, _ := os.UserHomeDir()
 	for name, tid := range config.Sessions {
 		expectedPath := filepath.Join(home, name)
 		if hookData.Cwd == expectedPath || strings.HasSuffix(hookData.Cwd, "/"+name) {
+			sessionName = name
 			topicID = tid
 			break
 		}
 	}
 
-	if topicID == 0 || config.GroupID == 0 {
+	if topicID == 0 || config.GroupID == 0 || sessionName == "" {
 		return nil
 	}
-
-	// Send typing indicator
-	sendTypingAction(config, config.GroupID, topicID)
 
 	// Get last message from transcript
 	if hookData.TranscriptPath != "" {
 		if msg := getLastAssistantMessage(hookData.TranscriptPath); msg != "" {
+			// Check cache to avoid duplicate messages
+			cacheFile := filepath.Join(os.TempDir(), "ccc-cache-"+sessionName)
+			lastSent, _ := os.ReadFile(cacheFile)
+			if string(lastSent) == msg {
+				return nil // Skip duplicate
+			}
+			os.WriteFile(cacheFile, []byte(msg), 0600)
+
 			// Truncate long messages
 			if len(msg) > 1000 {
 				msg = msg[:1000] + "..."
@@ -1494,6 +1584,17 @@ func doctor() {
 		}
 	}
 
+	// Check whisper (optional)
+	fmt.Print("whisper........... ")
+	if whisperPath, err := exec.LookPath("whisper"); err == nil {
+		fmt.Printf("✅ %s\n", whisperPath)
+	} else if _, err := os.Stat("/opt/homebrew/bin/whisper"); err == nil {
+		fmt.Println("✅ /opt/homebrew/bin/whisper")
+	} else {
+		fmt.Println("⚠️  not found (optional, for voice messages)")
+		fmt.Println("   Install: brew install openai-whisper")
+	}
+
 	fmt.Println()
 	if allGood {
 		fmt.Println("✅ All checks passed!")
@@ -1640,6 +1741,64 @@ func listen() error {
 				continue
 			}
 
+			chatID := msg.Chat.ID
+			threadID := msg.MessageThreadID
+			isGroup := msg.Chat.Type == "supergroup"
+
+			// Handle voice messages
+			if msg.Voice != nil && isGroup && threadID > 0 {
+				config, _ = loadConfig()
+				sessionName := getSessionByTopic(config, threadID)
+				if sessionName != "" {
+					tmuxName := "claude-" + sessionName
+					if tmuxSessionExists(tmuxName) {
+						sendMessage(config, chatID, threadID, "🎤 Transcribing...")
+						// Download and transcribe
+						audioPath := filepath.Join(os.TempDir(), fmt.Sprintf("voice_%d.ogg", time.Now().UnixNano()))
+						if err := downloadTelegramFile(config, msg.Voice.FileID, audioPath); err != nil {
+							sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Download failed: %v", err))
+						} else {
+							transcription, err := transcribeAudio(audioPath)
+							os.Remove(audioPath)
+							if err != nil {
+								sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Transcription failed: %v", err))
+							} else if transcription != "" {
+								sendMessage(config, chatID, threadID, fmt.Sprintf("📝 %s", transcription))
+								sendToTmux(tmuxName, transcription)
+							}
+						}
+					}
+				}
+				continue
+			}
+
+			// Handle photo messages
+			if len(msg.Photo) > 0 && isGroup && threadID > 0 {
+				config, _ = loadConfig()
+				sessionName := getSessionByTopic(config, threadID)
+				if sessionName != "" {
+					tmuxName := "claude-" + sessionName
+					if tmuxSessionExists(tmuxName) {
+						// Get largest photo (last in array)
+						photo := msg.Photo[len(msg.Photo)-1]
+						imgPath := filepath.Join(os.TempDir(), fmt.Sprintf("telegram_%d.jpg", time.Now().UnixNano()))
+						if err := downloadTelegramFile(config, photo.FileID, imgPath); err != nil {
+							sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Download failed: %v", err))
+						} else {
+							caption := msg.Caption
+							if caption == "" {
+								caption = "Analyze this image:"
+							}
+							prompt := fmt.Sprintf("%s %s", caption, imgPath)
+							sendMessage(config, chatID, threadID, fmt.Sprintf("📷 Image saved, sending to Claude..."))
+							// Send text first, wait for image to load, then send Enter
+							sendToTmuxWithDelay(tmuxName, prompt, 2*time.Second)
+						}
+					}
+				}
+				continue
+			}
+
 			text := strings.TrimSpace(msg.Text)
 			if text == "" {
 				continue
@@ -1655,10 +1814,6 @@ func listen() error {
 				}
 				text = strings.TrimSpace(text)
 			}
-
-			chatID := msg.Chat.ID
-			threadID := msg.MessageThreadID
-			isGroup := msg.Chat.Type == "supergroup"
 
 			fmt.Printf("[%s] @%s: %s\n", msg.Chat.Type, msg.From.Username, text)
 

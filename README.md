@@ -132,6 +132,9 @@ That's it! You're ready to control Claude Code from Telegram.
 | `ccc` | Start/attach Claude session in current directory |
 | `ccc -c` | Continue previous session |
 | `ccc "message"` | Send notification (if away mode on) |
+| `ccc doctor` | Check all dependencies and configuration |
+| `ccc config` | Show current configuration |
+| `ccc config projects-dir <path>` | Set base directory for new projects |
 | `ccc --help` | Show help |
 | `ccc --version` | Show version |
 
@@ -141,12 +144,14 @@ That's it! You're ready to control Claude Code from Telegram.
 
 | Command | Description |
 |---------|-------------|
-| `/new <name>` | Create new session + topic |
+| `/new <name>` | Create new session + topic (in projects directory) |
+| `/new ~/path/name` | Create session in custom location |
 | `/new` | Restart session in current topic (kills if running) |
 | `/continue <name>` | Create new session with conversation history |
-| `/continue` | Restart session with `-c` flag (continues conversation) |
+| `/continue` | Restart with `-c` flag (continues conversation) |
 | `/kill <name>` | Kill a session |
 | `/list` | List active sessions |
+| `/setdir <path>` | Set base directory for new projects |
 | `/ping` | Check if bot is alive |
 | `/away` | Toggle away mode (notifications) |
 | `/c <cmd>` | Run shell command on your machine |
@@ -266,6 +271,7 @@ Config is stored in `~/.ccc.json`:
     "myproject": 42,
     "another-project": 43
   },
+  "projects_dir": "~/Projects",
   "away": false
 }
 ```
@@ -276,7 +282,29 @@ Config is stored in `~/.ccc.json`:
 | `chat_id` | Your Telegram user ID (for authorization) |
 | `group_id` | Telegram group ID for session topics |
 | `sessions` | Map of session names to topic IDs |
+| `projects_dir` | Base directory for new projects (default: `~`) |
 | `away` | When true, notifications are sent |
+
+### Projects Directory
+
+By default, `/new myproject` creates `~/myproject`. To organize projects in a dedicated folder:
+
+```bash
+# Via CLI
+ccc config projects-dir ~/Projects
+
+# Via Telegram
+/setdir ~/Projects
+```
+
+Now `/new myproject` creates `~/Projects/myproject`.
+
+**Override for specific projects:**
+```
+/new myproject              → ~/Projects/myproject
+/new ~/experiments/test     → ~/experiments/test
+/new /tmp/quicktest         → /tmp/quicktest
+```
 
 ## How It Works
 
@@ -322,19 +350,31 @@ The only external communication is:
 
 ## Troubleshooting
 
+**First, run diagnostics:**
+```bash
+ccc doctor
+```
+This checks tmux, claude, config, hooks, and service status.
+
 **Bot not responding?**
-- Check if `ccc listen` is running
+- Check if `ccc listen` is running: `systemctl --user status ccc`
 - Verify bot token in `~/.ccc.json`
-- Check logs: `tail -f /tmp/ccc.log`
+- Check logs: `journalctl --user -u ccc -f`
 
 **Session not starting?**
 - Ensure tmux is installed: `which tmux`
 - Check if Claude Code is installed: `which claude`
+- On Linux, verify tmux socket exists: `ls /tmp/tmux-$(id -u)/`
 
 **Messages not reaching Claude?**
 - Verify you're in the correct topic
 - Check if session exists: `/list`
 - Try restarting: `/new`
+
+**Session dies immediately?**
+- Check `ccc doctor` output
+- Verify Claude can start: `claude --version`
+- Check tmux session: `tmux list-sessions`
 
 ## Contributing
 

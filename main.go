@@ -23,11 +23,12 @@ const version = "1.0.0"
 
 // Config stores bot configuration and session mappings
 type Config struct {
-	BotToken string           `json:"bot_token"`
-	ChatID   int64            `json:"chat_id"`            // Private chat for simple commands
-	GroupID  int64            `json:"group_id,omitempty"` // Group with topics for sessions
-	Sessions map[string]int64 `json:"sessions,omitempty"` // session name -> topic ID
-	Away     bool             `json:"away"`
+	BotToken    string           `json:"bot_token"`
+	ChatID      int64            `json:"chat_id"`              // Private chat for simple commands
+	GroupID     int64            `json:"group_id,omitempty"`   // Group with topics for sessions
+	Sessions    map[string]int64 `json:"sessions,omitempty"`   // session name -> topic ID
+	ProjectsDir string           `json:"projects_dir,omitempty"` // Base directory for new projects (default: ~)
+	Away        bool             `json:"away"`
 }
 
 // TelegramMessage represents a Telegram message
@@ -140,6 +141,40 @@ func saveConfig(config *Config) error {
 		return err
 	}
 	return os.WriteFile(getConfigPath(), data, 0600)
+}
+
+// getProjectsDir returns the base directory for projects
+func getProjectsDir(config *Config) string {
+	if config.ProjectsDir != "" {
+		// Expand ~ to home directory
+		if strings.HasPrefix(config.ProjectsDir, "~/") {
+			home, _ := os.UserHomeDir()
+			return filepath.Join(home, config.ProjectsDir[2:])
+		}
+		return config.ProjectsDir
+	}
+	home, _ := os.UserHomeDir()
+	return home
+}
+
+// resolveProjectPath resolves the full path for a project
+// If name starts with / or ~/, it's treated as absolute/home-relative path
+// Otherwise, it's relative to projects_dir
+func resolveProjectPath(config *Config, name string) string {
+	// Absolute path
+	if strings.HasPrefix(name, "/") {
+		return name
+	}
+	// Home-relative path (~/something or just ~)
+	if strings.HasPrefix(name, "~/") || name == "~" {
+		home, _ := os.UserHomeDir()
+		if name == "~" {
+			return home
+		}
+		return filepath.Join(home, name[2:])
+	}
+	// Relative to projects_dir
+	return filepath.Join(getProjectsDir(config), name)
 }
 
 // Telegram API helpers
@@ -615,8 +650,7 @@ func createSession(config *Config, name string) error {
 	}
 
 	// Create tmux session
-	home, _ := os.UserHomeDir()
-	workDir := filepath.Join(home, name)
+	workDir := resolveProjectPath(config, name)
 	if _, err := os.Stat(workDir); os.IsNotExist(err) {
 		// Create project directory
 		os.MkdirAll(workDir, 0755)
@@ -681,9 +715,8 @@ func handleHook() error {
 	// Find session by matching cwd suffix
 	var sessionName string
 	var topicID int64
-	home, _ := os.UserHomeDir()
 	for name, tid := range config.Sessions {
-		expectedPath := filepath.Join(home, name)
+		expectedPath := resolveProjectPath(config, name)
 		if hookData.Cwd == expectedPath || strings.HasSuffix(hookData.Cwd, "/"+name) {
 			sessionName = name
 			topicID = tid
@@ -749,12 +782,11 @@ func handlePermissionHook() error {
 	// Find session by matching cwd suffix
 	var sessionName string
 	var topicID int64
-	home, _ := os.UserHomeDir()
 	for name, tid := range config.Sessions {
 		if name == "" {
 			continue
 		}
-		expectedPath := filepath.Join(home, name)
+		expectedPath := resolveProjectPath(config, name)
 		if hookData.Cwd == expectedPath || strings.HasSuffix(hookData.Cwd, "/"+name) {
 			sessionName = name
 			topicID = tid
@@ -873,9 +905,8 @@ func handlePromptHook() error {
 
 	// Find session by matching cwd suffix
 	var topicID int64
-	home, _ := os.UserHomeDir()
 	for name, tid := range config.Sessions {
-		expectedPath := filepath.Join(home, name)
+		expectedPath := resolveProjectPath(config, name)
 		if hookData.Cwd == expectedPath || strings.HasSuffix(hookData.Cwd, "/"+name) {
 			topicID = tid
 			break
@@ -927,9 +958,8 @@ func handleOutputHook() error {
 	// Find session
 	var sessionName string
 	var topicID int64
-	home, _ := os.UserHomeDir()
 	for name, tid := range config.Sessions {
-		expectedPath := filepath.Join(home, name)
+		expectedPath := resolveProjectPath(config, name)
 		if hookData.Cwd == expectedPath || strings.HasSuffix(hookData.Cwd, "/"+name) {
 			sessionName = name
 			topicID = tid
@@ -982,9 +1012,8 @@ func handleQuestionHook() error {
 	// Find session by matching cwd suffix
 	var sessionName string
 	var topicID int64
-	home, _ := os.UserHomeDir()
 	for name, tid := range config.Sessions {
-		expectedPath := filepath.Join(home, name)
+		expectedPath := resolveProjectPath(config, name)
 		if hookData.Cwd == expectedPath || strings.HasSuffix(hookData.Cwd, "/"+name) {
 			sessionName = name
 			topicID = tid
@@ -1081,6 +1110,7 @@ func setBotCommands(botToken string) {
 			{"command": "continue", "description": "Continue session: /continue <name>"},
 			{"command": "kill", "description": "Kill session: /kill <name>"},
 			{"command": "list", "description": "List active sessions"},
+			{"command": "setdir", "description": "Set projects directory: /setdir ~/Projects"},
 			{"command": "c", "description": "Execute shell command: /c <cmd>"}
 		]
 	}`
@@ -1619,9 +1649,8 @@ func send(message string) error {
 	// Try to send to session topic if we're in a session directory
 	if config.GroupID != 0 {
 		cwd, _ := os.Getwd()
-		home, _ := os.UserHomeDir()
 		for name, topicID := range config.Sessions {
-			expectedPath := filepath.Join(home, name)
+			expectedPath := resolveProjectPath(config, name)
 			if cwd == expectedPath || strings.HasSuffix(cwd, "/"+name) {
 				return sendMessage(config, config.GroupID, topicID, message)
 			}
@@ -1844,6 +1873,20 @@ func listen() error {
 				continue
 			}
 
+			if strings.HasPrefix(text, "/setdir") {
+				arg := strings.TrimSpace(strings.TrimPrefix(text, "/setdir"))
+				if arg == "" {
+					currentDir := getProjectsDir(config)
+					sendMessage(config, chatID, threadID, fmt.Sprintf("📁 Projects directory: %s\n\nUsage: /setdir ~/Projects", currentDir))
+				} else {
+					config.ProjectsDir = arg
+					saveConfig(config)
+					resolvedPath := getProjectsDir(config)
+					sendMessage(config, chatID, threadID, fmt.Sprintf("✅ Projects directory set to: %s", resolvedPath))
+				}
+				continue
+			}
+
 			if strings.HasPrefix(text, "/kill ") {
 				name := strings.TrimPrefix(text, "/kill ")
 				name = strings.TrimSpace(name)
@@ -1899,9 +1942,8 @@ func listen() error {
 					// Save mapping
 					config.Sessions[arg] = topicID
 					saveConfig(config)
-					// Find work directory
-					home, _ := os.UserHomeDir()
-					workDir := filepath.Join(home, arg)
+					// Resolve and create work directory
+					workDir := resolveProjectPath(config, arg)
 					if _, err := os.Stat(workDir); os.IsNotExist(err) {
 						os.MkdirAll(workDir, 0755)
 					}
@@ -1934,9 +1976,8 @@ func listen() error {
 						killTmuxSession(tmuxName)
 						time.Sleep(300 * time.Millisecond)
 					}
-					// Find work directory
-					home, _ := os.UserHomeDir()
-					workDir := filepath.Join(home, sessionName)
+					// Resolve and create work directory
+					workDir := resolveProjectPath(config, sessionName)
 					if _, err := os.Stat(workDir); os.IsNotExist(err) {
 						os.MkdirAll(workDir, 0755)
 					}
@@ -2031,6 +2072,8 @@ USAGE:
 COMMANDS:
     setup <token>           Complete setup (bot, hook, service - all in one!)
     doctor                  Check all dependencies and configuration
+    config                  Show/set configuration values
+    config projects-dir <path>  Set base directory for projects
     setgroup                Configure Telegram group for topics (if skipped during setup)
     listen                  Start the Telegram bot listener manually
     install                 Install Claude hook manually
@@ -2040,12 +2083,14 @@ COMMANDS:
 TELEGRAM COMMANDS:
     /ping                   Check if bot is alive
     /away                   Toggle away mode
-    /new <name>             Create new session with topic
+    /new <name>             Create new session with topic (in projects_dir)
+    /new ~/path/name        Create session with custom path
     /new                    Restart session in current topic (kills if running)
     /continue <name>        Create new session with -c flag
     /continue               Restart session with -c flag (kills if running)
     /kill <name>            Kill a session
     /list                   List active sessions
+    /setdir <path>          Set base directory for projects
     /c <cmd>                Execute shell command
 
 FLAGS:
@@ -2105,6 +2150,45 @@ func main() {
 
 	case "doctor":
 		doctor()
+
+	case "config":
+		config, err := loadConfig()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if len(os.Args) < 3 {
+			// Show current config
+			fmt.Printf("projects_dir: %s\n", getProjectsDir(config))
+			fmt.Println("\nUsage: ccc config <key> <value>")
+			fmt.Println("  ccc config projects-dir ~/Projects")
+			os.Exit(0)
+		}
+		key := os.Args[2]
+		if len(os.Args) < 4 {
+			// Show specific key
+			switch key {
+			case "projects-dir":
+				fmt.Println(getProjectsDir(config))
+			default:
+				fmt.Fprintf(os.Stderr, "Unknown config key: %s\n", key)
+				os.Exit(1)
+			}
+			os.Exit(0)
+		}
+		value := os.Args[3]
+		switch key {
+		case "projects-dir":
+			config.ProjectsDir = value
+			if err := saveConfig(config); err != nil {
+				fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("✅ projects_dir set to: %s\n", getProjectsDir(config))
+		default:
+			fmt.Fprintf(os.Stderr, "Unknown config key: %s\n", key)
+			os.Exit(1)
+		}
 
 	case "setgroup":
 		config, err := loadConfig()

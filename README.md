@@ -33,7 +33,9 @@ Ever wanted to:
 📱 Phone (Telegram)              💻 PC (Terminal)
 ─────────────────────────────────────────────────────
 1. /new myproject
-   → Creates topic + session
+   → Creates ~/Projects/myproject
+   → Creates Telegram topic
+   → Starts Claude session
 
 2. "Fix the auth bug"
    → Claude starts working
@@ -42,7 +44,7 @@ Ever wanted to:
    ✅ myproject
    Fixed the auth bug by...
 
-                                 4. cd ~/myproject && ccc
+                                 4. cd ~/Projects/myproject && ccc
                                     → Attaches to same session
 
                                  5. Continue working with Claude
@@ -268,10 +270,16 @@ Config is stored in `~/.ccc.json`:
   "chat_id": 123456789,
   "group_id": -1001234567890,
   "sessions": {
-    "myproject": 42,
-    "another-project": 43
+    "myproject": {
+      "topic_id": 42,
+      "path": "/home/user/Projects/myproject"
+    },
+    "experiment": {
+      "topic_id": 43,
+      "path": "/home/user/experiments/test"
+    }
   },
-  "projects_dir": "~/Projects",
+  "projects_dir": "/home/user/Projects",
   "away": false
 }
 ```
@@ -281,9 +289,11 @@ Config is stored in `~/.ccc.json`:
 | `bot_token` | Your Telegram bot token |
 | `chat_id` | Your Telegram user ID (for authorization) |
 | `group_id` | Telegram group ID for session topics |
-| `sessions` | Map of session names to topic IDs |
+| `sessions` | Map of session names to topic ID and project path |
 | `projects_dir` | Base directory for new projects (default: `~`) |
 | `away` | When true, notifications are sent |
+
+> **Note**: Session paths are stored at creation time. Changing `projects_dir` only affects new sessions.
 
 ### Projects Directory
 
@@ -305,6 +315,54 @@ Now `/new myproject` creates `~/Projects/myproject`.
 /new ~/experiments/test     → ~/experiments/test
 /new /tmp/quicktest         → /tmp/quicktest
 ```
+
+### Session Lifecycle
+
+When you create a session with `/new myproject`:
+
+1. **Telegram topic** is created in your group
+2. **Project folder** is created (if it doesn't exist)
+3. **tmux session** starts with Claude Code
+4. **Config** stores the session name, topic ID, and full path
+
+**Using existing folders:** If the folder already exists, ccc uses it as-is without modifying contents. This lets you create sessions for existing projects.
+
+### Deleting and Recovering Sessions
+
+The `/kill` command performs a **soft delete**:
+
+| What | Deleted? |
+|------|----------|
+| tmux session | Yes |
+| Config entry | Yes |
+| Project folder | **No** (preserved) |
+| Telegram topic | **No** (preserved) |
+
+**Scenarios:**
+
+```
+# Scenario 1: Temporarily stop a session
+/kill myproject
+# Later: /new myproject → new topic, same folder
+
+# Scenario 2: Clean up topic manually
+/kill myproject
+# In Telegram: Archive or delete the topic via UI
+# Folder with code remains on disk
+
+# Scenario 3: Fresh start with existing code
+/kill myproject
+# Delete topic in Telegram UI
+/new myproject
+# → New topic, new chat history, existing code preserved
+
+# Scenario 4: Reuse folder with different session name
+/kill oldname
+/new ~/Projects/oldname  # explicit path
+# → Creates session with name "oldname" pointing to same folder
+```
+
+> **Tip**: Telegram topics can be archived (hidden) or deleted via UI. Deleting a topic removes all message history permanently.
 
 ## How It Works
 

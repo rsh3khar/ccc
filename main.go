@@ -21,14 +21,20 @@ import (
 
 const version = "1.0.0"
 
+// SessionInfo stores information about a session
+type SessionInfo struct {
+	TopicID int64  `json:"topic_id"`
+	Path    string `json:"path"`
+}
+
 // Config stores bot configuration and session mappings
 type Config struct {
-	BotToken    string           `json:"bot_token"`
-	ChatID      int64            `json:"chat_id"`              // Private chat for simple commands
-	GroupID     int64            `json:"group_id,omitempty"`   // Group with topics for sessions
-	Sessions    map[string]int64 `json:"sessions,omitempty"`   // session name -> topic ID
-	ProjectsDir string           `json:"projects_dir,omitempty"` // Base directory for new projects (default: ~)
-	Away        bool             `json:"away"`
+	BotToken    string                  `json:"bot_token"`
+	ChatID      int64                   `json:"chat_id"`                // Private chat for simple commands
+	GroupID     int64                   `json:"group_id,omitempty"`     // Group with topics for sessions
+	Sessions    map[string]*SessionInfo `json:"sessions,omitempty"`     // session name -> session info
+	ProjectsDir string                  `json:"projects_dir,omitempty"` // Base directory for new projects (default: ~)
+	Away        bool                    `json:"away"`
 }
 
 // TelegramMessage represents a Telegram message
@@ -127,12 +133,89 @@ func loadConfig() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	var config Config
-	err = json.Unmarshal(data, &config)
-	if config.Sessions == nil {
-		config.Sessions = make(map[string]int64)
+
+	// First check if this is old format (sessions as map[string]int64)
+	var rawConfig map[string]json.RawMessage
+	if err := json.Unmarshal(data, &rawConfig); err != nil {
+		return nil, err
 	}
-	return &config, err
+
+	// Try to detect old sessions format
+	var needsMigration bool
+	var oldSessions map[string]int64
+	if sessionsRaw, ok := rawConfig["sessions"]; ok {
+		// Try to parse as old format (map of topic IDs)
+		if json.Unmarshal(sessionsRaw, &oldSessions) == nil && len(oldSessions) > 0 {
+			// Check if values are positive numbers (old format)
+			for _, v := range oldSessions {
+				if v > 0 {
+					needsMigration = true
+					break
+				}
+			}
+		}
+	}
+
+	var config Config
+	if needsMigration {
+		// Parse everything except sessions first
+		type ConfigWithoutSessions struct {
+			BotToken    string `json:"bot_token"`
+			ChatID      int64  `json:"chat_id"`
+			GroupID     int64  `json:"group_id"`
+			ProjectsDir string `json:"projects_dir"`
+			Away        bool   `json:"away"`
+		}
+		var partial ConfigWithoutSessions
+		json.Unmarshal(data, &partial)
+
+		config.BotToken = partial.BotToken
+		config.ChatID = partial.ChatID
+		config.GroupID = partial.GroupID
+		config.ProjectsDir = partial.ProjectsDir
+		config.Away = partial.Away
+
+		// Migrate sessions
+		home, _ := os.UserHomeDir()
+		config.Sessions = make(map[string]*SessionInfo)
+		for name, topicID := range oldSessions {
+			// For old sessions, try to figure out the path
+			var sessionPath string
+			if strings.HasPrefix(name, "/") {
+				// Absolute path
+				sessionPath = name
+			} else if strings.HasPrefix(name, "~/") {
+				// Home-relative path
+				sessionPath = filepath.Join(home, name[2:])
+			} else if config.ProjectsDir != "" {
+				// Use projects_dir if set
+				projectsDir := config.ProjectsDir
+				if strings.HasPrefix(projectsDir, "~/") {
+					projectsDir = filepath.Join(home, projectsDir[2:])
+				}
+				sessionPath = filepath.Join(projectsDir, name)
+			} else {
+				sessionPath = filepath.Join(home, name)
+			}
+			config.Sessions[name] = &SessionInfo{
+				TopicID: topicID,
+				Path:    sessionPath,
+			}
+		}
+		// Save migrated config
+		saveConfig(&config)
+	} else {
+		// Parse with new format
+		if err := json.Unmarshal(data, &config); err != nil {
+			return nil, err
+		}
+	}
+
+	if config.Sessions == nil {
+		config.Sessions = make(map[string]*SessionInfo)
+	}
+
+	return &config, nil
 }
 
 func saveConfig(config *Config) error {
@@ -538,7 +621,10 @@ func startSession(continueSession bool) error {
 		if _, exists := config.Sessions[name]; !exists {
 			topicID, err := createForumTopic(config, name)
 			if err == nil {
-				config.Sessions[name] = topicID
+				config.Sessions[name] = &SessionInfo{
+					TopicID: topicID,
+					Path:    cwd,
+				}
 				saveConfig(config)
 				fmt.Printf("📱 Created Telegram topic: %s\n", name)
 			}
@@ -660,8 +746,11 @@ func createSession(config *Config, name string) error {
 		return fmt.Errorf("failed to create tmux session: %w", err)
 	}
 
-	// Save mapping
-	config.Sessions[name] = topicID
+	// Save mapping with full path
+	config.Sessions[name] = &SessionInfo{
+		TopicID: topicID,
+		Path:    workDir,
+	}
 	if err := saveConfig(config); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
@@ -685,8 +774,8 @@ func killSession(config *Config, name string) error {
 }
 
 func getSessionByTopic(config *Config, topicID int64) string {
-	for name, tid := range config.Sessions {
-		if tid == topicID {
+	for name, info := range config.Sessions {
+		if info != nil && info.TopicID == topicID {
 			return name
 		}
 	}
@@ -712,14 +801,17 @@ func handleHook() error {
 
 	fmt.Fprintf(os.Stderr, "hook: cwd=%s transcript=%s\n", hookData.Cwd, hookData.TranscriptPath)
 
-	// Find session by matching cwd suffix
+	// Find session by matching cwd with saved path
 	var sessionName string
 	var topicID int64
-	for name, tid := range config.Sessions {
-		expectedPath := resolveProjectPath(config, name)
-		if hookData.Cwd == expectedPath || strings.HasSuffix(hookData.Cwd, "/"+name) {
+	for name, info := range config.Sessions {
+		if info == nil {
+			continue
+		}
+		// Match against saved path or suffix
+		if hookData.Cwd == info.Path || strings.HasSuffix(hookData.Cwd, "/"+name) {
 			sessionName = name
-			topicID = tid
+			topicID = info.TopicID
 			break
 		}
 	}
@@ -782,14 +874,13 @@ func handlePermissionHook() error {
 	// Find session by matching cwd suffix
 	var sessionName string
 	var topicID int64
-	for name, tid := range config.Sessions {
-		if name == "" {
+	for name, info := range config.Sessions {
+		if name == "" || info == nil {
 			continue
 		}
-		expectedPath := resolveProjectPath(config, name)
-		if hookData.Cwd == expectedPath || strings.HasSuffix(hookData.Cwd, "/"+name) {
+		if hookData.Cwd == info.Path || strings.HasSuffix(hookData.Cwd, "/"+name) {
 			sessionName = name
-			topicID = tid
+			topicID = info.TopicID
 			break
 		}
 	}
@@ -905,10 +996,12 @@ func handlePromptHook() error {
 
 	// Find session by matching cwd suffix
 	var topicID int64
-	for name, tid := range config.Sessions {
-		expectedPath := resolveProjectPath(config, name)
-		if hookData.Cwd == expectedPath || strings.HasSuffix(hookData.Cwd, "/"+name) {
-			topicID = tid
+	for name, info := range config.Sessions {
+		if info == nil {
+			continue
+		}
+		if hookData.Cwd == info.Path || strings.HasSuffix(hookData.Cwd, "/"+name) {
+			topicID = info.TopicID
 			break
 		}
 	}
@@ -958,11 +1051,13 @@ func handleOutputHook() error {
 	// Find session
 	var sessionName string
 	var topicID int64
-	for name, tid := range config.Sessions {
-		expectedPath := resolveProjectPath(config, name)
-		if hookData.Cwd == expectedPath || strings.HasSuffix(hookData.Cwd, "/"+name) {
+	for name, info := range config.Sessions {
+		if info == nil {
+			continue
+		}
+		if hookData.Cwd == info.Path || strings.HasSuffix(hookData.Cwd, "/"+name) {
 			sessionName = name
-			topicID = tid
+			topicID = info.TopicID
 			break
 		}
 	}
@@ -1012,11 +1107,13 @@ func handleQuestionHook() error {
 	// Find session by matching cwd suffix
 	var sessionName string
 	var topicID int64
-	for name, tid := range config.Sessions {
-		expectedPath := resolveProjectPath(config, name)
-		if hookData.Cwd == expectedPath || strings.HasSuffix(hookData.Cwd, "/"+name) {
+	for name, info := range config.Sessions {
+		if info == nil {
+			continue
+		}
+		if hookData.Cwd == info.Path || strings.HasSuffix(hookData.Cwd, "/"+name) {
 			sessionName = name
-			topicID = tid
+			topicID = info.TopicID
 			break
 		}
 	}
@@ -1314,7 +1411,7 @@ func setup(botToken string) error {
 	fmt.Println("==============================")
 	fmt.Println()
 
-	config := &Config{BotToken: botToken, Sessions: make(map[string]int64)}
+	config := &Config{BotToken: botToken, Sessions: make(map[string]*SessionInfo)}
 
 	// Step 1: Get chat ID
 	fmt.Println("Step 1/4: Connecting to Telegram...")
@@ -1649,10 +1746,12 @@ func send(message string) error {
 	// Try to send to session topic if we're in a session directory
 	if config.GroupID != 0 {
 		cwd, _ := os.Getwd()
-		for name, topicID := range config.Sessions {
-			expectedPath := resolveProjectPath(config, name)
-			if cwd == expectedPath || strings.HasSuffix(cwd, "/"+name) {
-				return sendMessage(config, config.GroupID, topicID, message)
+		for name, info := range config.Sessions {
+			if info == nil {
+				continue
+			}
+			if cwd == info.Path || strings.HasSuffix(cwd, "/"+name) {
+				return sendMessage(config, config.GroupID, info.TopicID, message)
 			}
 		}
 	}
@@ -1939,11 +2038,14 @@ func listen() error {
 						sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Failed to create topic: %v", err))
 						continue
 					}
-					// Save mapping
-					config.Sessions[arg] = topicID
-					saveConfig(config)
 					// Resolve and create work directory
 					workDir := resolveProjectPath(config, arg)
+					// Save mapping with full path
+					config.Sessions[arg] = &SessionInfo{
+						TopicID: topicID,
+						Path:    workDir,
+					}
+					saveConfig(config)
 					if _, err := os.Stat(workDir); os.IsNotExist(err) {
 						os.MkdirAll(workDir, 0755)
 					}

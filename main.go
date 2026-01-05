@@ -1936,6 +1936,7 @@ func listen() error {
 							if err != nil {
 								sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Transcription failed: %v", err))
 							} else if transcription != "" {
+								fmt.Printf("[voice] @%s: %s\n", msg.From.Username, transcription)
 								sendMessage(config, chatID, threadID, fmt.Sprintf("📝 %s", transcription))
 								sendToTmux(tmuxName, transcription)
 							}

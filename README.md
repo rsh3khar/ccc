@@ -33,7 +33,9 @@ Ever wanted to:
 📱 Phone (Telegram)              💻 PC (Terminal)
 ─────────────────────────────────────────────────────
 1. /new myproject
-   → Creates topic + session
+   → Creates ~/Projects/myproject
+   → Creates Telegram topic
+   → Starts Claude session
 
 2. "Fix the auth bug"
    → Claude starts working
@@ -42,7 +44,7 @@ Ever wanted to:
    ✅ myproject
    Fixed the auth bug by...
 
-                                 4. cd ~/myproject && ccc
+                                 4. cd ~/Projects/myproject && ccc
                                     → Attaches to same session
 
                                  5. Continue working with Claude
@@ -58,13 +60,12 @@ Ever wanted to:
 
 ### Optional Dependencies
 
-- **[Whisper](https://github.com/openai/whisper)** - For voice message transcription
-  ```bash
-  # macOS
-  brew install openai-whisper
-  # or with pip
-  pip install openai-whisper
-  ```
+- **Voice transcription** - For voice message support (choose one):
+  - Local Whisper: `pip install openai-whisper`
+  - OpenAI API: Set `OPENAI_API_KEY`
+  - Groq API: Set `GROQ_API_KEY` (fastest)
+
+  See [Transcription Setup](#transcription-setup) for configuration.
 
 > **Windows users**: Use [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) with Ubuntu. Claude Code and ccc both work best on Linux. Install WSL, then follow the Linux instructions.
 
@@ -132,6 +133,9 @@ That's it! You're ready to control Claude Code from Telegram.
 | `ccc` | Start/attach Claude session in current directory |
 | `ccc -c` | Continue previous session |
 | `ccc "message"` | Send notification (if away mode on) |
+| `ccc doctor` | Check all dependencies and configuration |
+| `ccc config` | Show current configuration |
+| `ccc config projects-dir <path>` | Set base directory for new projects |
 | `ccc --help` | Show help |
 | `ccc --version` | Show version |
 
@@ -141,12 +145,14 @@ That's it! You're ready to control Claude Code from Telegram.
 
 | Command | Description |
 |---------|-------------|
-| `/new <name>` | Create new session + topic |
+| `/new <name>` | Create new session + topic (in projects directory) |
+| `/new ~/path/name` | Create session in custom location |
 | `/new` | Restart session in current topic (kills if running) |
 | `/continue <name>` | Create new session with conversation history |
-| `/continue` | Restart session with `-c` flag (continues conversation) |
+| `/continue` | Restart with `-c` flag (continues conversation) |
 | `/kill <name>` | Kill a session |
 | `/list` | List active sessions |
+| `/setdir <path>` | Set base directory for new projects |
 | `/ping` | Check if bot is alive |
 | `/away` | Toggle away mode (notifications) |
 | `/c <cmd>` | Run shell command on your machine |
@@ -156,9 +162,10 @@ That's it! You're ready to control Claude Code from Telegram.
 
 ### Voice Messages & Images
 
-**Voice Messages** (requires Whisper):
+**Voice Messages**:
 - Send a voice message in a session topic
-- Bot transcribes using Whisper and sends text to Claude
+- Bot transcribes and sends text to Claude
+- Supports multiple transcription backends (see [Transcription Setup](#transcription-setup))
 
 **Image Attachments**:
 - Send an image in a session topic (with optional caption)
@@ -263,9 +270,17 @@ Config is stored in `~/.ccc.json`:
   "chat_id": 123456789,
   "group_id": -1001234567890,
   "sessions": {
-    "myproject": 42,
-    "another-project": 43
+    "myproject": {
+      "topic_id": 42,
+      "path": "/home/user/Projects/myproject"
+    },
+    "experiment": {
+      "topic_id": 43,
+      "path": "/home/user/experiments/test"
+    }
   },
+  "projects_dir": "/home/user/Projects",
+  "transcription_cmd": "~/bin/transcribe-groq",
   "away": false
 }
 ```
@@ -275,8 +290,120 @@ Config is stored in `~/.ccc.json`:
 | `bot_token` | Your Telegram bot token |
 | `chat_id` | Your Telegram user ID (for authorization) |
 | `group_id` | Telegram group ID for session topics |
-| `sessions` | Map of session names to topic IDs |
+| `sessions` | Map of session names to topic ID and project path |
+| `projects_dir` | Base directory for new projects (default: `~`) |
+| `transcription_cmd` | Command for voice transcription (optional) |
 | `away` | When true, notifications are sent |
+
+> **Note**: Session paths are stored at creation time. Changing `projects_dir` only affects new sessions.
+
+### Projects Directory
+
+By default, `/new myproject` creates `~/myproject`. To organize projects in a dedicated folder:
+
+```bash
+# Via CLI
+ccc config projects-dir ~/Projects
+
+# Via Telegram
+/setdir ~/Projects
+```
+
+Now `/new myproject` creates `~/Projects/myproject`.
+
+**Override for specific projects:**
+```
+/new myproject              → ~/Projects/myproject
+/new ~/experiments/test     → ~/experiments/test
+/new /tmp/quicktest         → /tmp/quicktest
+```
+
+### Transcription Setup
+
+Voice messages require a transcription backend. Configure via `transcription_cmd` in `~/.ccc.json`:
+
+```json
+{
+  "transcription_cmd": "~/bin/transcribe-groq"
+}
+```
+
+The command receives the audio file path as an argument and should output the transcription to stdout.
+
+**Available backends** (see `examples/` directory):
+
+| Script | Backend | Speed |
+|--------|---------|-------|
+| `transcribe-whisper` | Local Whisper | Slow (runs locally) |
+| `transcribe-openai` | OpenAI API | Medium |
+| `transcribe-groq` | Groq API | Fast (recommended) |
+
+**Setup (Groq example):**
+
+```bash
+# 1. Copy script
+cp examples/transcribe-groq ~/bin/
+chmod +x ~/bin/transcribe-groq
+
+# 2. Edit script and add your API key
+nano ~/bin/transcribe-groq
+# Set: GROQ_API_KEY="gsk_your_key_here"
+
+# 3. Add to ~/.ccc.json
+"transcription_cmd": "~/bin/transcribe-groq"
+```
+
+Get Groq API key: https://console.groq.com/keys (free tier available)
+
+**Fallback:** If `transcription_cmd` is not set, ccc tries to use local `whisper` command.
+
+### Session Lifecycle
+
+When you create a session with `/new myproject`:
+
+1. **Telegram topic** is created in your group
+2. **Project folder** is created (if it doesn't exist)
+3. **tmux session** starts with Claude Code
+4. **Config** stores the session name, topic ID, and full path
+
+**Using existing folders:** If the folder already exists, ccc uses it as-is without modifying contents. This lets you create sessions for existing projects.
+
+### Deleting and Recovering Sessions
+
+The `/kill` command performs a **soft delete**:
+
+| What | Deleted? |
+|------|----------|
+| tmux session | Yes |
+| Config entry | Yes |
+| Project folder | **No** (preserved) |
+| Telegram topic | **No** (preserved) |
+
+**Scenarios:**
+
+```
+# Scenario 1: Temporarily stop a session
+/kill myproject
+# Later: /new myproject → new topic, same folder
+
+# Scenario 2: Clean up topic manually
+/kill myproject
+# In Telegram: Archive or delete the topic via UI
+# Folder with code remains on disk
+
+# Scenario 3: Fresh start with existing code
+/kill myproject
+# Delete topic in Telegram UI
+/new myproject
+# → New topic, new chat history, existing code preserved
+
+# Scenario 4: Reuse folder with different session name
+/kill oldname
+/new ~/Projects/oldname  # explicit path
+# → Creates session with name "oldname" pointing to same folder
+```
+
+> **Tip**: Telegram topics can be archived (hidden) or deleted via UI. Deleting a topic removes all message history permanently.
 
 ## How It Works
 
@@ -322,19 +449,31 @@ The only external communication is:
 
 ## Troubleshooting
 
+**First, run diagnostics:**
+```bash
+ccc doctor
+```
+This checks tmux, claude, config, hooks, and service status.
+
 **Bot not responding?**
-- Check if `ccc listen` is running
+- Check if `ccc listen` is running: `systemctl --user status ccc`
 - Verify bot token in `~/.ccc.json`
-- Check logs: `tail -f /tmp/ccc.log`
+- Check logs: `journalctl --user -u ccc -f`
 
 **Session not starting?**
 - Ensure tmux is installed: `which tmux`
 - Check if Claude Code is installed: `which claude`
+- On Linux, verify tmux socket exists: `ls /tmp/tmux-$(id -u)/`
 
 **Messages not reaching Claude?**
 - Verify you're in the correct topic
 - Check if session exists: `/list`
 - Try restarting: `/new`
+
+**Session dies immediately?**
+- Check `ccc doctor` output
+- Verify Claude can start: `claude --version`
+- Check tmux session: `tmux list-sessions`
 
 ## Contributing
 

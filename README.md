@@ -332,25 +332,28 @@ The command receives the audio file path as an argument and should output the tr
 
 **Available backends** (see `examples/` directory):
 
-| Script | Backend | Requirements |
-|--------|---------|--------------|
-| `transcribe-whisper` | Local Whisper | `pip install openai-whisper` |
-| `transcribe-openai` | OpenAI API | `OPENAI_API_KEY` env var |
-| `transcribe-groq` | Groq API (fast) | `GROQ_API_KEY` env var |
+| Script | Backend | Speed |
+|--------|---------|-------|
+| `transcribe-whisper` | Local Whisper | Slow (runs locally) |
+| `transcribe-openai` | OpenAI API | Medium |
+| `transcribe-groq` | Groq API | Fast (recommended) |
 
-**Setup example (Groq - recommended for speed):**
+**Setup (Groq example):**
 
 ```bash
-# Copy script to your bin
+# 1. Copy script
 cp examples/transcribe-groq ~/bin/
 chmod +x ~/bin/transcribe-groq
 
-# Set API key (add to ~/.bashrc or ~/.zshrc)
-export GROQ_API_KEY="your-api-key"
+# 2. Edit script and add your API key
+nano ~/bin/transcribe-groq
+# Set: GROQ_API_KEY="gsk_your_key_here"
 
-# Configure ccc
-# Add to ~/.ccc.json: "transcription_cmd": "~/bin/transcribe-groq"
+# 3. Add to ~/.ccc.json
+"transcription_cmd": "~/bin/transcribe-groq"
 ```
+
+Get Groq API key: https://console.groq.com/keys (free tier available)
 
 **Fallback:** If `transcription_cmd` is not set, ccc tries to use local `whisper` command.
 

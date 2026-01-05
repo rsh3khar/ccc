@@ -1,18 +1,22 @@
 #!/bin/bash
 # Transcription using OpenAI Whisper API
-# Requires: OPENAI_API_KEY environment variable
+# Setup: Replace YOUR_API_KEY_HERE with your OpenAI API key
 # Usage: transcribe-openai /path/to/audio.ogg
 
 set -e
 
-AUDIO_FILE="$1"
-if [ -z "$AUDIO_FILE" ]; then
-    echo "Usage: $0 <audio_file>" >&2
+#=== CONFIGURATION ===
+OPENAI_API_KEY="YOUR_API_KEY_HERE"  # Get from: https://platform.openai.com/api-keys
+#=====================
+
+if [ "$OPENAI_API_KEY" = "YOUR_API_KEY_HERE" ]; then
+    echo "Error: Edit this script and set your OPENAI_API_KEY" >&2
     exit 1
 fi
 
-if [ -z "$OPENAI_API_KEY" ]; then
-    echo "Error: OPENAI_API_KEY not set" >&2
+AUDIO_FILE="$1"
+if [ -z "$AUDIO_FILE" ]; then
+    echo "Usage: $0 <audio_file>" >&2
     exit 1
 fi
 

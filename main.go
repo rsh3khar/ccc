@@ -278,10 +278,17 @@ func telegramAPI(config *Config, method string, params url.Values) (*TelegramRes
 }
 
 func sendMessage(config *Config, chatID int64, threadID int64, text string) error {
+	_, err := sendMessageGetID(config, chatID, threadID, text)
+	return err
+}
+
+// sendMessageGetID sends a message and returns the message ID for later editing
+func sendMessageGetID(config *Config, chatID int64, threadID int64, text string) (int64, error) {
 	const maxLen = 4000
 
 	// Split long messages
 	messages := splitMessage(text, maxLen)
+	var lastMsgID int64
 
 	for _, msg := range messages {
 		params := url.Values{
@@ -294,16 +301,50 @@ func sendMessage(config *Config, chatID int64, threadID int64, text string) erro
 
 		result, err := telegramAPI(config, "sendMessage", params)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		if !result.OK {
-			return fmt.Errorf("telegram error: %s", result.Description)
+			return 0, fmt.Errorf("telegram error: %s", result.Description)
+		}
+
+		// Extract message_id from result
+		if len(result.Result) > 0 {
+			var msgResult struct {
+				MessageID int64 `json:"message_id"`
+			}
+			if json.Unmarshal(result.Result, &msgResult) == nil {
+				lastMsgID = msgResult.MessageID
+			}
 		}
 
 		// Small delay between messages to maintain order
 		if len(messages) > 1 {
 			time.Sleep(100 * time.Millisecond)
 		}
+	}
+	return lastMsgID, nil
+}
+
+// editMessage edits an existing message
+func editMessage(config *Config, chatID int64, messageID int64, text string) error {
+	const maxLen = 4000
+	if len(text) > maxLen {
+		text = text[:maxLen-3] + "..."
+	}
+
+	params := url.Values{
+		"chat_id":    {fmt.Sprintf("%d", chatID)},
+		"message_id": {fmt.Sprintf("%d", messageID)},
+		"text":       {text},
+	}
+
+	result, err := telegramAPI(config, "editMessageText", params)
+	if err != nil {
+		return err
+	}
+	if !result.OK {
+		// If edit fails (e.g., message not modified), ignore
+		return nil
 	}
 	return nil
 }
@@ -1106,6 +1147,7 @@ func handleOutputHook() error {
 		if msg := getLastAssistantMessage(hookData.TranscriptPath); msg != "" {
 			// Check cache to avoid duplicate messages
 			cacheFile := filepath.Join(os.TempDir(), "ccc-cache-"+sessionName)
+			msgIDFile := filepath.Join(os.TempDir(), "ccc-msgid-"+sessionName)
 			lastSent, _ := os.ReadFile(cacheFile)
 			if string(lastSent) == msg {
 				return nil // Skip duplicate
@@ -1116,7 +1158,21 @@ func handleOutputHook() error {
 			if len(msg) > 1000 {
 				msg = msg[:1000] + "..."
 			}
-			sendMessage(config, config.GroupID, topicID, msg)
+
+			// PostToolUse: try to edit existing message
+			if hookData.HookEventName == "PostToolUse" {
+				if msgIDData, err := os.ReadFile(msgIDFile); err == nil {
+					if msgID, err := strconv.ParseInt(string(msgIDData), 10, 64); err == nil && msgID > 0 {
+						editMessage(config, config.GroupID, msgID, msg)
+						return nil
+					}
+				}
+			}
+
+			// PreToolUse or no existing message: send new and store message_id
+			if msgID, err := sendMessageGetID(config, config.GroupID, topicID, msg); err == nil && msgID > 0 {
+				os.WriteFile(msgIDFile, []byte(strconv.FormatInt(msgID, 10)), 0600)
+			}
 		}
 	}
 

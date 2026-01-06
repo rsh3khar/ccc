@@ -325,17 +325,18 @@ func sendMessageGetID(config *Config, chatID int64, threadID int64, text string)
 	return lastMsgID, nil
 }
 
-// editMessage edits an existing message
-func editMessage(config *Config, chatID int64, messageID int64, text string) error {
+// editMessage edits an existing message, sending overflow as new messages
+func editMessage(config *Config, chatID int64, messageID int64, threadID int64, text string) error {
 	const maxLen = 4000
-	if len(text) > maxLen {
-		text = text[:maxLen-3] + "..."
-	}
 
+	// Split message - first part goes to edit, rest as new messages
+	messages := splitMessage(text, maxLen)
+
+	// Edit existing message with first part
 	params := url.Values{
 		"chat_id":    {fmt.Sprintf("%d", chatID)},
 		"message_id": {fmt.Sprintf("%d", messageID)},
-		"text":       {text},
+		"text":       {messages[0]},
 	}
 
 	result, err := telegramAPI(config, "editMessageText", params)
@@ -346,6 +347,13 @@ func editMessage(config *Config, chatID int64, messageID int64, text string) err
 		// If edit fails (e.g., message not modified), ignore
 		return nil
 	}
+
+	// Send remaining parts as new messages
+	for i := 1; i < len(messages); i++ {
+		time.Sleep(100 * time.Millisecond)
+		sendMessage(config, chatID, threadID, messages[i])
+	}
+
 	return nil
 }
 
@@ -356,6 +364,18 @@ type InlineKeyboardButton struct {
 }
 
 func sendMessageWithKeyboard(config *Config, chatID int64, threadID int64, text string, buttons [][]InlineKeyboardButton) error {
+	const maxLen = 4000
+
+	// Split long messages - send all but last as regular messages, last with keyboard
+	messages := splitMessage(text, maxLen)
+
+	// Send all but the last message as regular messages
+	for i := 0; i < len(messages)-1; i++ {
+		sendMessage(config, chatID, threadID, messages[i])
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Send the last message with keyboard
 	keyboard := map[string]interface{}{
 		"inline_keyboard": buttons,
 	}
@@ -363,7 +383,7 @@ func sendMessageWithKeyboard(config *Config, chatID int64, threadID int64, text 
 
 	params := url.Values{
 		"chat_id":      {fmt.Sprintf("%d", chatID)},
-		"text":         {text},
+		"text":         {messages[len(messages)-1]},
 		"reply_markup": {string(keyboardJSON)},
 	}
 	if threadID > 0 {
@@ -388,6 +408,11 @@ func answerCallbackQuery(config *Config, callbackID string) {
 }
 
 func editMessageRemoveKeyboard(config *Config, chatID int64, messageID int, newText string) {
+	const maxLen = 4000
+	if len(newText) > maxLen {
+		newText = newText[:maxLen-3] + "..."
+	}
+
 	params := url.Values{
 		"chat_id":    {fmt.Sprintf("%d", chatID)},
 		"message_id": {fmt.Sprintf("%d", messageID)},
@@ -906,7 +931,14 @@ func handleHook() error {
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "hook: sending message to telegram\n")
+	// Check cache to avoid duplicate messages
+	cacheFile := filepath.Join(os.TempDir(), "ccc-cache-"+sessionName)
+	lastSent, _ := os.ReadFile(cacheFile)
+	if string(lastSent) == lastMessage {
+		return nil // Skip duplicate
+	}
+	os.WriteFile(cacheFile, []byte(lastMessage), 0600)
+
 	return sendMessage(config, config.GroupID, topicID, fmt.Sprintf("✅ %s\n\n%s", sessionName, lastMessage))
 }
 
@@ -1090,13 +1122,9 @@ func handlePromptHook() error {
 	// Send typing action
 	sendTypingAction(config, config.GroupID, topicID)
 
-	// Send the prompt to Telegram
-	prompt := hookData.Prompt
-	if len(prompt) > 500 {
-		prompt = prompt[:500] + "..."
-	}
+	// Send the prompt to Telegram (sendMessage handles splitting long messages)
 	fmt.Fprintf(os.Stderr, "hook-prompt: sending to topic %d\n", topicID)
-	return sendMessage(config, config.GroupID, topicID, fmt.Sprintf("💬 %s", prompt))
+	return sendMessage(config, config.GroupID, topicID, fmt.Sprintf("💬 %s", hookData.Prompt))
 }
 
 func handleOutputHook() error {
@@ -1145,31 +1173,30 @@ func handleOutputHook() error {
 	// Get last message from transcript
 	if hookData.TranscriptPath != "" {
 		if msg := getLastAssistantMessage(hookData.TranscriptPath); msg != "" {
-			// Check cache to avoid duplicate messages
 			cacheFile := filepath.Join(os.TempDir(), "ccc-cache-"+sessionName)
 			msgIDFile := filepath.Join(os.TempDir(), "ccc-msgid-"+sessionName)
 			lastSent, _ := os.ReadFile(cacheFile)
-			if string(lastSent) == msg {
-				return nil // Skip duplicate
-			}
-			os.WriteFile(cacheFile, []byte(msg), 0600)
-
-			// Truncate long messages
-			if len(msg) > 1000 {
-				msg = msg[:1000] + "..."
-			}
 
 			// PostToolUse: try to edit existing message
 			if hookData.HookEventName == "PostToolUse" {
 				if msgIDData, err := os.ReadFile(msgIDFile); err == nil {
 					if msgID, err := strconv.ParseInt(string(msgIDData), 10, 64); err == nil && msgID > 0 {
-						editMessage(config, config.GroupID, msgID, msg)
+						// Only edit if message changed
+						if string(lastSent) != msg {
+							os.WriteFile(cacheFile, []byte(msg), 0600)
+							editMessage(config, config.GroupID, msgID, topicID, msg)
+						}
 						return nil
 					}
 				}
 			}
 
-			// PreToolUse or no existing message: send new and store message_id
+			// PreToolUse or no existing message: check for duplicates, then send new
+			if string(lastSent) == msg {
+				return nil // Skip duplicate
+			}
+			os.WriteFile(cacheFile, []byte(msg), 0600)
+
 			if msgID, err := sendMessageGetID(config, config.GroupID, topicID, msg); err == nil && msgID > 0 {
 				os.WriteFile(msgIDFile, []byte(strconv.FormatInt(msgID, 10)), 0600)
 			}

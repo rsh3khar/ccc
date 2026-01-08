@@ -110,7 +110,8 @@ type HookData struct {
 	SessionID      string `json:"session_id"`
 	HookEventName  string `json:"hook_event_name"`
 	ToolName       string `json:"tool_name"`
-	Prompt         string `json:"prompt"` // For UserPromptSubmit hook
+	Prompt         string `json:"prompt"`       // For UserPromptSubmit hook
+	Notification   string `json:"notification"` // For Notification hook
 	ToolInput      struct {
 		Questions []struct {
 			Question    string `json:"question"`
@@ -931,14 +932,13 @@ func handleHook() error {
 		}
 	}
 
-	// Check cache to avoid duplicate messages
+	// Clear the cache so future PostToolUse hooks don't think this message was sent
 	cacheFile := filepath.Join(os.TempDir(), "ccc-cache-"+sessionName)
-	lastSent, _ := os.ReadFile(cacheFile)
-	if string(lastSent) == lastMessage {
-		return nil // Skip duplicate
-	}
-	os.WriteFile(cacheFile, []byte(lastMessage), 0600)
+	os.Remove(cacheFile)
+	msgIDFile := filepath.Join(os.TempDir(), "ccc-msgid-"+sessionName)
+	os.Remove(msgIDFile)
 
+	// Always send the Stop message (final result)
 	return sendMessage(config, config.GroupID, topicID, fmt.Sprintf("✅ %s\n\n%s", sessionName, lastMessage))
 }
 
@@ -1103,12 +1103,14 @@ func handlePromptHook() error {
 	}
 
 	// Find session by matching cwd suffix
+	var sessionName string
 	var topicID int64
 	for name, info := range config.Sessions {
 		if info == nil {
 			continue
 		}
 		if hookData.Cwd == info.Path || strings.HasSuffix(hookData.Cwd, "/"+name) {
+			sessionName = name
 			topicID = info.TopicID
 			break
 		}
@@ -1117,6 +1119,14 @@ func handlePromptHook() error {
 	if topicID == 0 || config.GroupID == 0 {
 		fmt.Fprintf(os.Stderr, "hook-prompt: no topic found for cwd=%s\n", hookData.Cwd)
 		return nil
+	}
+
+	// Cache the current last assistant message to prevent re-sending old messages
+	if sessionName != "" && hookData.TranscriptPath != "" {
+		if msg := getLastAssistantMessage(hookData.TranscriptPath); msg != "" {
+			cacheFile := filepath.Join(os.TempDir(), "ccc-cache-"+sessionName)
+			os.WriteFile(cacheFile, []byte(msg), 0600)
+		}
 	}
 
 	// Send typing action
@@ -1143,14 +1153,6 @@ func handleOutputHook() error {
 		return nil
 	}
 
-	// Skip certain tools that don't produce interesting output
-	skipTools := map[string]bool{
-		"Read": true, "Glob": true, "Grep": true, "LSP": true,
-		"TodoWrite": true, "Task": true, "TaskOutput": true,
-	}
-	if skipTools[hookData.ToolName] {
-		return nil
-	}
 
 	// Find session
 	var sessionName string
@@ -1271,6 +1273,45 @@ func handleQuestionHook() error {
 	return nil
 }
 
+func handleNotificationHook() error {
+	config, err := loadConfig()
+	if err != nil {
+		return nil
+	}
+
+	rawData, _ := io.ReadAll(os.Stdin)
+	if len(rawData) == 0 {
+		return nil
+	}
+
+	var hookData HookData
+	if err := json.Unmarshal(rawData, &hookData); err != nil {
+		return nil
+	}
+
+	if hookData.Notification == "" {
+		return nil
+	}
+
+	// Find session by matching cwd suffix
+	var topicID int64
+	for name, info := range config.Sessions {
+		if info == nil {
+			continue
+		}
+		if hookData.Cwd == info.Path || strings.HasSuffix(hookData.Cwd, "/"+name) {
+			topicID = info.TopicID
+			break
+		}
+	}
+
+	if topicID == 0 || config.GroupID == 0 {
+		return nil
+	}
+
+	return sendMessage(config, config.GroupID, topicID, fmt.Sprintf("🔔 %s", hookData.Notification))
+}
+
 // Install hook in Claude settings
 
 func installHook() error {
@@ -1348,7 +1389,7 @@ func executeCommand(cmdStr string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "bash", "-c", cmdStr)
+	cmd := exec.CommandContext(ctx, "zsh", "-i", "-l", "-c", cmdStr)
 	cmd.Dir, _ = os.UserHomeDir()
 
 	var stdout, stderr bytes.Buffer
@@ -2464,6 +2505,12 @@ func main() {
 
 	case "hook-output":
 		if err := handleOutputHook(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "hook-notification":
+		if err := handleNotificationHook(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}

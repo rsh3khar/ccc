@@ -275,6 +275,10 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+		if err := installService(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 
 	case "uninstall":
 		if err := uninstallHook(); err != nil {

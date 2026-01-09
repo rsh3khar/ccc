@@ -2929,6 +2929,7 @@ func runRelayServer(port string) {
 		t.Status = "streaming"
 		fmt.Printf("📤 Streaming: %s (%s)\n", t.Filename, token[:8])
 
+		var bytesSent int64
 		// Read from sender and send to channel
 		buf := make([]byte, 32*1024)
 		for {
@@ -2936,9 +2937,12 @@ func runRelayServer(port string) {
 			if n > 0 {
 				data := make([]byte, n)
 				copy(data, buf[:n])
+				bytesSent += int64(n)
 				select {
 				case t.DataChan <- data:
 				case <-t.DoneChan:
+					// Receiver finished/disconnected early
+					fmt.Printf("📤 Receiver done early: %s (%s) after %d bytes\n", t.Filename, token[:8], bytesSent)
 					return
 				}
 			}
@@ -2949,15 +2953,26 @@ func runRelayServer(port string) {
 		close(t.DataChan)
 		<-t.DoneChan // Wait for receiver to finish
 
-		relayTransfers.Lock()
-		delete(relayTransfers.transfers, token)
-		relayTransfers.Unlock()
-
-		fmt.Printf("✅ Completed: %s (%s)\n", t.Filename, token[:8])
+		// DON'T delete transfer - allow multiple downloads
+		// Transfer is cleaned up by timeout goroutine or /cancel endpoint
+		fmt.Printf("✅ Stream complete: %s (%s) - %d bytes\n", t.Filename, token[:8], bytesSent)
 	})
 
 	// Download endpoint - receiver gets file
 	http.HandleFunc("/d/", func(w http.ResponseWriter, r *http.Request) {
+		// Ignore Telegram link preview bots and HEAD requests
+		ua := r.UserAgent()
+		if strings.Contains(ua, "TelegramBot") || strings.Contains(ua, "Telegram") {
+			fmt.Printf("🚫 Ignored Telegram preview bot: %s\n", ua)
+			http.Error(w, "Preview not available", http.StatusForbidden)
+			return
+		}
+		if r.Method == http.MethodHead {
+			fmt.Printf("🚫 Ignored HEAD request\n")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
 		token := strings.TrimPrefix(r.URL.Path, "/d/")
 		relayTransfers.Lock()
 		t, exists := relayTransfers.transfers[token]
@@ -2979,7 +2994,7 @@ func runRelayServer(port string) {
 			return
 		}
 
-		fmt.Printf("📥 Download started: %s (%s)\n", t.Filename, token[:8])
+		fmt.Printf("📥 Download started: %s (%s) from %s\n", t.Filename, token[:8], r.UserAgent())
 
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, t.Filename))
 		w.Header().Set("Content-Type", "application/octet-stream")
@@ -2988,23 +3003,50 @@ func runRelayServer(port string) {
 		}
 
 		flusher, _ := w.(http.Flusher)
+		ctx := r.Context()
+		var bytesWritten int64
+		var writeErr error
 
 		// Stream data from sender to receiver
-		for data := range t.DataChan {
-			w.Write(data)
-			if flusher != nil {
-				flusher.Flush()
+	downloadLoop:
+		for {
+			select {
+			case <-ctx.Done():
+				// Client disconnected
+				fmt.Printf("❌ Client disconnected: %s (%s) after %d bytes\n", t.Filename, token[:8], bytesWritten)
+				writeErr = ctx.Err()
+				break downloadLoop
+			case data, ok := <-t.DataChan:
+				if !ok {
+					// Channel closed, transfer complete
+					break downloadLoop
+				}
+				n, err := w.Write(data)
+				bytesWritten += int64(n)
+				if err != nil {
+					fmt.Printf("❌ Write error: %s (%s) after %d bytes: %v\n", t.Filename, token[:8], bytesWritten, err)
+					writeErr = err
+					break downloadLoop
+				}
+				if flusher != nil {
+					flusher.Flush()
+				}
 			}
 		}
 
-		// Reset to waiting for another download (don't close DoneChan yet)
+		// Signal sender we're done (success or failure)
 		relayTransfers.Lock()
 		if t, exists := relayTransfers.transfers[token]; exists {
 			close(t.DoneChan)
-			t.Status = "waiting"
+			if writeErr == nil {
+				t.Status = "waiting"
+				fmt.Printf("📥 Download complete: %s (%s) - %d bytes sent\n", t.Filename, token[:8], bytesWritten)
+			} else {
+				t.Status = "waiting" // Still allow retry
+				fmt.Printf("📥 Download failed: %s (%s) - allowing retry\n", t.Filename, token[:8])
+			}
 		}
 		relayTransfers.Unlock()
-		fmt.Printf("📥 Download complete: %s (%s) - ready for another\n", t.Filename, token[:8])
 	})
 
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {

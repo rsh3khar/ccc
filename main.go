@@ -1419,12 +1419,17 @@ func installHook() error {
 		hooks = make(map[string]interface{})
 	}
 
-	// Define all ccc hooks to install
+	// Define all ccc hooks to install (new format with matcher and hooks array)
 	cccHooks := map[string][]interface{}{
 		"Stop": {
 			map[string]interface{}{
-				"type":    "command",
-				"command": cccPath + " hook",
+				"hooks": []interface{}{
+					map[string]interface{}{
+						"command": cccPath + " hook",
+						"type":    "command",
+					},
+				},
+				"matcher": "",
 			},
 		},
 		"Notification": {

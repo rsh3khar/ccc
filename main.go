@@ -2744,15 +2744,21 @@ func handleSendFile(filePath string) error {
 }
 
 func streamFileToRelay(relayURL, token, filePath, fileName string, fileSize int64) error {
-	// Poll for download request
+	// Poll for download requests - loop to allow multiple downloads
 	timeout := time.After(10 * time.Minute)
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
+
+	downloadCount := 0
 
 	for {
 		select {
 		case <-timeout:
 			http.Get(relayURL + "/cancel/" + token)
+			if downloadCount > 0 {
+				fmt.Printf("⏰ Session expired after %d download(s)\n", downloadCount)
+				return nil
+			}
 			return fmt.Errorf("download timed out (10 min)")
 		case <-ticker.C:
 			resp, err := http.Get(relayURL + "/status/" + token)
@@ -2767,13 +2773,13 @@ func streamFileToRelay(relayURL, token, filePath, fileName string, fileSize int6
 				continue
 			} else if status == "ready" {
 				// Someone requested download, start streaming
-				fmt.Printf("📤 Streaming %s...\n", fileName)
+				downloadCount++
+				fmt.Printf("📤 Streaming %s (download #%d)...\n", fileName, downloadCount)
 
 				file, err := os.Open(filePath)
 				if err != nil {
 					return err
 				}
-				defer file.Close()
 
 				// Stream to relay
 				req, _ := http.NewRequest("POST", relayURL+"/stream/"+token, file)
@@ -2783,14 +2789,19 @@ func streamFileToRelay(relayURL, token, filePath, fileName string, fileSize int6
 
 				client := &http.Client{Timeout: 30 * time.Minute}
 				streamResp, err := client.Do(req)
+				file.Close()
 				if err != nil {
-					return fmt.Errorf("streaming failed: %w", err)
+					fmt.Printf("⚠️ Streaming error: %v\n", err)
+					continue
 				}
 				streamResp.Body.Close()
 
-				fmt.Printf("✅ File sent successfully!\n")
-				return nil
-			} else if status == "done" || status == "cancelled" || status == "not_found" {
+				fmt.Printf("✅ Download #%d complete! Waiting for more requests...\n", downloadCount)
+				// Continue looping for more downloads
+			} else if status == "cancelled" || status == "not_found" {
+				if downloadCount > 0 {
+					return nil
+				}
 				return fmt.Errorf("transfer %s", status)
 			}
 		}
@@ -2952,16 +2963,19 @@ func runRelayServer(port string) {
 		t, exists := relayTransfers.transfers[token]
 		if exists && t.Status == "waiting" {
 			t.Status = "ready"
+			// Create fresh channels for this download
+			t.DataChan = make(chan []byte, 100)
+			t.DoneChan = make(chan struct{})
 		}
 		relayTransfers.Unlock()
 
 		if !exists {
-			http.Error(w, "File not found or already downloaded", http.StatusNotFound)
+			http.Error(w, "File not found - sender may have disconnected", http.StatusNotFound)
 			return
 		}
 
 		if t.Status != "ready" && t.Status != "streaming" {
-			http.Error(w, "Transfer not available", http.StatusGone)
+			http.Error(w, "Transfer in progress, please wait and retry", http.StatusConflict)
 			return
 		}
 
@@ -2983,8 +2997,14 @@ func runRelayServer(port string) {
 			}
 		}
 
-		t.Status = "done"
-		close(t.DoneChan)
+		// Reset to waiting for another download (don't close DoneChan yet)
+		relayTransfers.Lock()
+		if t, exists := relayTransfers.transfers[token]; exists {
+			close(t.DoneChan)
+			t.Status = "waiting"
+		}
+		relayTransfers.Unlock()
+		fmt.Printf("📥 Download complete: %s (%s) - ready for another\n", t.Filename, token[:8])
 	})
 
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {

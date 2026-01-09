@@ -2729,9 +2729,9 @@ func handleSendFile(filePath string) error {
 	}
 	resp.Body.Close()
 
-	// Send download link to Telegram
-	downloadURL := fmt.Sprintf("%s/d/%s", relayURL, token)
-	msg := fmt.Sprintf("📦 %s (%d MB)\n\n🔗 One-time download:\n%s", fileName, fileSize/(1024*1024), downloadURL)
+	// Send download link to Telegram (include filename in URL for browser compatibility)
+	downloadURL := fmt.Sprintf("%s/d/%s/%s", relayURL, token, fileName)
+	msg := fmt.Sprintf("📦 %s (%d MB)\n\n🔗 Download:\n%s", fileName, fileSize/(1024*1024), downloadURL)
 
 	fmt.Printf("📤 Sending link to %s...\n", sessionName)
 	if err := sendMessage(config, config.GroupID, topicID, msg); err != nil {
@@ -2973,7 +2973,9 @@ func runRelayServer(port string) {
 			return
 		}
 
-		token := strings.TrimPrefix(r.URL.Path, "/d/")
+		// URL format: /d/{token}/{filename} - extract just the token
+		pathParts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/d/"), "/", 2)
+		token := pathParts[0]
 		relayTransfers.Lock()
 		t, exists := relayTransfers.transfers[token]
 		if exists && t.Status == "waiting" {

@@ -22,6 +22,7 @@ Ever wanted to:
 - **Multi-Session** - Run multiple concurrent sessions, each with its own Telegram topic
 - **Seamless Handoff** - Start on phone, continue on PC (or vice versa)
 - **Notifications** - Get Claude's responses in Telegram when away
+- **File Transfer** - Send files to your phone via `ccc send` (streaming relay for large files)
 - **Voice Messages** - Send voice messages, automatically transcribed with Whisper
 - **Image Support** - Send images to Claude for analysis
 - **tmux Integration** - Sessions persist and can be attached from any terminal
@@ -133,6 +134,7 @@ That's it! You're ready to control Claude Code from Telegram.
 | `ccc` | Start/attach Claude session in current directory |
 | `ccc -c` | Continue previous session |
 | `ccc "message"` | Send notification (if away mode on) |
+| `ccc send <file>` | Send a file to Telegram (see [File Transfer](#file-transfer)) |
 | `ccc doctor` | Check all dependencies and configuration |
 | `ccc config` | Show current configuration |
 | `ccc config projects-dir <path>` | Set base directory for new projects |
@@ -170,6 +172,61 @@ That's it! You're ready to control Claude Code from Telegram.
 **Image Attachments**:
 - Send an image in a session topic (with optional caption)
 - Image is saved and path is sent to Claude for analysis
+
+### File Transfer
+
+Send files from your computer to Telegram using `ccc send`:
+
+```bash
+# Send a file to the current session's topic
+ccc send ./build/app.apk
+
+# Works with any file type
+ccc send ~/Documents/report.pdf
+ccc send /tmp/output.zip
+```
+
+**How it works:**
+
+| File Size | Method |
+|-----------|--------|
+| < 50 MB | Direct upload to Telegram |
+| ≥ 50 MB | Streaming relay (P2P) |
+
+**Large files (≥ 50 MB):**
+- A download link is sent to your Telegram
+- File streams directly from your machine through a relay to your phone
+- No files are stored on the relay - it's a direct pipe
+- Link supports multiple downloads within 10 minutes
+- The sender (`ccc send`) must stay running while downloading
+
+**Example workflow:**
+```
+💻 Terminal                          📱 Phone (Telegram)
+──────────────────────────────────────────────────────────
+ccc send ./huge-file.zip
+📤 Sending link to myproject...
+⏳ Waiting for download...
+                                     📦 huge-file.zip (120 MB)
+                                     🔗 Download:
+                                     https://ccc-relay.fly.dev/d/abc123/huge-file.zip
+
+                                     [Click link to download]
+
+📤 Streaming (download #1)...
+✅ Download #1 complete!
+⏰ Session expired after 1 download(s)
+```
+
+**Claude Code Integration:**
+
+Claude can use `ccc send` to send you files it creates:
+```
+You: "Build the APK and send it to me"
+Claude: [builds APK]
+Claude: $ ccc send ./app/build/outputs/apk/release/app.apk
+→ You receive the APK on Telegram
+```
 
 ### Example Session
 

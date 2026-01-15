@@ -9,7 +9,9 @@ import (
 )
 
 func sessionName(name string) string {
-	return "claude-" + name
+	// Replace dots with underscores - tmux interprets dots as window/pane separators
+	safeName := strings.ReplaceAll(name, ".", "_")
+	return "claude-" + safeName
 }
 
 func createSession(config *Config, name string) error {
@@ -79,7 +81,7 @@ func startSession(continueSession bool) error {
 		return err
 	}
 	name := filepath.Base(cwd)
-	tmuxName := "claude-" + name
+	tmuxName := sessionName(name)
 
 	// Load config to check/create topic
 	config, err := loadConfig()

@@ -9,6 +9,9 @@ build:
 install: build
 	mkdir -p ~/bin
 	install -m 755 ccc ~/bin/ccc
+	@if [ "$$(uname)" = "Darwin" ]; then \
+		codesign -f -s - ~/bin/ccc 2>/dev/null || true; \
+	fi
 	@echo "✅ Installed to ~/bin/ccc"
 
 clean:

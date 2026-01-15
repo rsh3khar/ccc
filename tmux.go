@@ -75,8 +75,7 @@ func initPaths() {
 }
 
 func tmuxSessionExists(name string) bool {
-	// Use = prefix to force exact session name matching (avoids issues with dots in names)
-	cmd := exec.Command(tmuxPath, "-S", tmuxSocket, "has-session", "-t", "="+name)
+	cmd := exec.Command(tmuxPath, "-S", tmuxSocket, "has-session", "-t", name)
 	return cmd.Run() == nil
 }
 
@@ -95,12 +94,11 @@ func createTmuxSession(name string, workDir string, continueSession bool) error 
 	}
 
 	// Enable mouse mode for this session (allows scrolling)
-	// Use = prefix to force exact session name matching (avoids issues with dots in names)
-	exec.Command(tmuxPath, "-S", tmuxSocket, "set-option", "-t", "="+name, "mouse", "on").Run()
+	exec.Command(tmuxPath, "-S", tmuxSocket, "set-option", "-t", name, "mouse", "on").Run()
 
 	// Send the command to the session via send-keys (preserves TTY properly)
 	time.Sleep(200 * time.Millisecond)
-	exec.Command(tmuxPath, "-S", tmuxSocket, "send-keys", "-t", "="+name, cccCmd, "C-m").Run()
+	exec.Command(tmuxPath, "-S", tmuxSocket, "send-keys", "-t", name, cccCmd, "C-m").Run()
 
 	return nil
 }
@@ -129,11 +127,8 @@ func sendToTmux(session string, text string) error {
 }
 
 func sendToTmuxWithDelay(session string, text string, delay time.Duration) error {
-	// Use = prefix to force exact session name matching (avoids issues with dots in names)
-	target := "=" + session
-
 	// Send text literally
-	cmd := exec.Command(tmuxPath, "-S", tmuxSocket, "send-keys", "-t", target, "-l", text)
+	cmd := exec.Command(tmuxPath, "-S", tmuxSocket, "send-keys", "-t", session, "-l", text)
 	if err := cmd.Run(); err != nil {
 		return err
 	}
@@ -142,18 +137,17 @@ func sendToTmuxWithDelay(session string, text string, delay time.Duration) error
 	time.Sleep(delay)
 
 	// Send Enter twice (Claude Code needs double Enter)
-	cmd = exec.Command(tmuxPath, "-S", tmuxSocket, "send-keys", "-t", target, "C-m")
+	cmd = exec.Command(tmuxPath, "-S", tmuxSocket, "send-keys", "-t", session, "C-m")
 	if err := cmd.Run(); err != nil {
 		return err
 	}
 	time.Sleep(50 * time.Millisecond)
-	cmd = exec.Command(tmuxPath, "-S", tmuxSocket, "send-keys", "-t", target, "C-m")
+	cmd = exec.Command(tmuxPath, "-S", tmuxSocket, "send-keys", "-t", session, "C-m")
 	return cmd.Run()
 }
 
 func killTmuxSession(name string) error {
-	// Use = prefix to force exact session name matching (avoids issues with dots in names)
-	cmd := exec.Command(tmuxPath, "-S", tmuxSocket, "kill-session", "-t", "="+name)
+	cmd := exec.Command(tmuxPath, "-S", tmuxSocket, "kill-session", "-t", name)
 	return cmd.Run()
 }
 

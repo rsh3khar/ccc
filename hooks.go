@@ -36,8 +36,8 @@ func handleHook() error {
 		if info == nil {
 			continue
 		}
-		// Match against saved path or suffix
-		if hookData.Cwd == info.Path || strings.HasSuffix(hookData.Cwd, "/"+name) {
+		// Match against saved path, subdirectories of saved path, or suffix
+		if hookData.Cwd == info.Path || strings.HasPrefix(hookData.Cwd, info.Path+"/") || strings.HasSuffix(hookData.Cwd, "/"+name) {
 			sessionName = name
 			topicID = info.TopicID
 			break
@@ -105,14 +105,15 @@ func handlePermissionHook() error {
 		return nil
 	}
 
-	// Find session by matching cwd suffix
+	// Find session by matching cwd with saved path
 	var sessionName string
 	var topicID int64
 	for name, info := range config.Sessions {
 		if name == "" || info == nil {
 			continue
 		}
-		if hookData.Cwd == info.Path || strings.HasSuffix(hookData.Cwd, "/"+name) {
+		// Match against saved path, subdirectories of saved path, or suffix
+		if hookData.Cwd == info.Path || strings.HasPrefix(hookData.Cwd, info.Path+"/") || strings.HasSuffix(hookData.Cwd, "/"+name) {
 			sessionName = name
 			topicID = info.TopicID
 			break
@@ -228,14 +229,15 @@ func handlePromptHook() error {
 		return nil
 	}
 
-	// Find session by matching cwd suffix
+	// Find session by matching cwd with saved path
 	var sessionName string
 	var topicID int64
 	for name, info := range config.Sessions {
 		if info == nil {
 			continue
 		}
-		if hookData.Cwd == info.Path || strings.HasSuffix(hookData.Cwd, "/"+name) {
+		// Match against saved path, subdirectories of saved path, or suffix
+		if hookData.Cwd == info.Path || strings.HasPrefix(hookData.Cwd, info.Path+"/") || strings.HasSuffix(hookData.Cwd, "/"+name) {
 			sessionName = name
 			topicID = info.TopicID
 			break
@@ -279,14 +281,15 @@ func handleOutputHook() error {
 		return nil
 	}
 
-	// Find session
+	// Find session by matching cwd with saved path
 	var sessionName string
 	var topicID int64
 	for name, info := range config.Sessions {
 		if info == nil {
 			continue
 		}
-		if hookData.Cwd == info.Path || strings.HasSuffix(hookData.Cwd, "/"+name) {
+		// Match against saved path, subdirectories of saved path, or suffix
+		if hookData.Cwd == info.Path || strings.HasPrefix(hookData.Cwd, info.Path+"/") || strings.HasSuffix(hookData.Cwd, "/"+name) {
 			sessionName = name
 			topicID = info.TopicID
 			break
@@ -349,14 +352,15 @@ func handleQuestionHook() error {
 		return nil
 	}
 
-	// Find session by matching cwd suffix
+	// Find session by matching cwd with saved path
 	var sessionName string
 	var topicID int64
 	for name, info := range config.Sessions {
 		if info == nil {
 			continue
 		}
-		if hookData.Cwd == info.Path || strings.HasSuffix(hookData.Cwd, "/"+name) {
+		// Match against saved path, subdirectories of saved path, or suffix
+		if hookData.Cwd == info.Path || strings.HasPrefix(hookData.Cwd, info.Path+"/") || strings.HasSuffix(hookData.Cwd, "/"+name) {
 			sessionName = name
 			topicID = info.TopicID
 			break
@@ -418,13 +422,14 @@ func handleNotificationHook() error {
 		return nil
 	}
 
-	// Find session by matching cwd suffix
+	// Find session by matching cwd with saved path
 	var topicID int64
 	for name, info := range config.Sessions {
 		if info == nil {
 			continue
 		}
-		if hookData.Cwd == info.Path || strings.HasSuffix(hookData.Cwd, "/"+name) {
+		// Match against saved path, subdirectories of saved path, or suffix
+		if hookData.Cwd == info.Path || strings.HasPrefix(hookData.Cwd, info.Path+"/") || strings.HasSuffix(hookData.Cwd, "/"+name) {
 			topicID = info.TopicID
 			break
 		}

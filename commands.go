@@ -456,7 +456,8 @@ func send(message string) error {
 			if info == nil {
 				continue
 			}
-			if cwd == info.Path || strings.HasSuffix(cwd, "/"+name) {
+			// Match against saved path, subdirectories of saved path, or suffix
+			if cwd == info.Path || strings.HasPrefix(cwd, info.Path+"/") || strings.HasSuffix(cwd, "/"+name) {
 				return sendMessage(config, config.GroupID, info.TopicID, message)
 			}
 		}

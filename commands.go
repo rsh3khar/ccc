@@ -558,10 +558,10 @@ func listen() error {
 					if tmuxSessionExists(tmuxName) {
 						// Send arrow down keys to select option, then Enter
 						for i := 0; i < optionIndex; i++ {
-							exec.Command(tmuxPath, "-S", tmuxSocket, "send-keys", "-t", tmuxName, "Down").Run()
+							exec.Command(tmuxPath, "send-keys", "-t", tmuxName, "Down").Run()
 							time.Sleep(50 * time.Millisecond)
 						}
-						exec.Command(tmuxPath, "-S", tmuxSocket, "send-keys", "-t", tmuxName, "Enter").Run()
+						exec.Command(tmuxPath, "send-keys", "-t", tmuxName, "Enter").Run()
 						fmt.Printf("[callback] Selected option %d for %s\n", optionIndex, sessionName)
 					}
 				}

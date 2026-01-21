@@ -110,14 +110,14 @@ func startSession(continueSession bool) error {
 		// Check if we're already inside tmux
 		if os.Getenv("TMUX") != "" {
 			// Inside tmux: switch to the session
-			cmd := exec.Command(tmuxPath, "-S", tmuxSocket, "switch-client", "-t", tmuxName)
+			cmd := exec.Command(tmuxPath, "switch-client", "-t", tmuxName)
 			cmd.Stdin = os.Stdin
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
 			return cmd.Run()
 		}
 		// Outside tmux: attach to existing session
-		cmd := exec.Command(tmuxPath, "-S", tmuxSocket, "attach-session", "-t", tmuxName)
+		cmd := exec.Command(tmuxPath, "attach-session", "-t", tmuxName)
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -131,13 +131,13 @@ func startSession(continueSession bool) error {
 
 	// Check if we're already inside tmux
 	if os.Getenv("TMUX") != "" {
-		cmd := exec.Command(tmuxPath, "-S", tmuxSocket, "switch-client", "-t", tmuxName)
+		cmd := exec.Command(tmuxPath, "switch-client", "-t", tmuxName)
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
 	}
-	cmd := exec.Command(tmuxPath, "-S", tmuxSocket, "attach-session", "-t", tmuxName)
+	cmd := exec.Command(tmuxPath, "attach-session", "-t", tmuxName)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

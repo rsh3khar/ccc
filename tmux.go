@@ -41,7 +41,7 @@ func initPaths() {
 	} else {
 		home, _ := os.UserHomeDir()
 		claudePaths := []string{
-			home + "/.claude/local/claude",
+			home + "/.local/bin/claude",
 			"/usr/local/bin/claude",
 		}
 		for _, p := range claudePaths {
@@ -102,7 +102,15 @@ func runClaudeRaw(continueSession bool) error {
 }
 
 func sendToTmux(session string, text string) error {
-	return sendToTmuxWithDelay(session, text, 50*time.Millisecond)
+	// Calculate delay based on text length
+	// Base: 50ms + 0.5ms per character, capped at 5 seconds
+	baseDelay := 50 * time.Millisecond
+	charDelay := time.Duration(len(text)) * 500 * time.Microsecond // 0.5ms per char
+	delay := baseDelay + charDelay
+	if delay > 5*time.Second {
+		delay = 5 * time.Second
+	}
+	return sendToTmuxWithDelay(session, text, delay)
 }
 
 func sendToTmuxWithDelay(session string, text string, delay time.Duration) error {

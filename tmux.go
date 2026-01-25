@@ -30,8 +30,11 @@ func initPaths() {
 		}
 	}
 
-	// Find ccc binary (self)
-	if exe, err := os.Executable(); err == nil {
+	// Find ccc binary - prefer PATH over current executable
+	// This ensures hooks point to the installed location, not a local build
+	if path, err := exec.LookPath("ccc"); err == nil {
+		cccPath = path
+	} else if exe, err := os.Executable(); err == nil {
 		cccPath = exe
 	}
 

@@ -479,7 +479,6 @@ func removeCccHooks(hookArray []interface{}) []interface{} {
 func installHook() error {
 	home, _ := os.UserHomeDir()
 	settingsPath := filepath.Join(home, ".claude", "settings.json")
-	cccPath := filepath.Join(home, "bin", "ccc")
 
 	data, err := os.ReadFile(settingsPath)
 	if err != nil {

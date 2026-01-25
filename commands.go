@@ -296,15 +296,25 @@ func doctor() {
 		allGood = false
 	}
 
-	// Check ccc is in ~/bin (for hooks)
-	fmt.Print("ccc in ~/bin...... ")
+	// Check ccc is in PATH (for hooks)
+	fmt.Print("ccc in PATH....... ")
 	home, _ := os.UserHomeDir()
-	expectedCccPath := filepath.Join(home, "bin", "ccc")
-	if _, err := os.Stat(expectedCccPath); err == nil {
-		fmt.Printf("✅ %s\n", expectedCccPath)
+	cccPaths := []string{
+		filepath.Join(home, "bin", "ccc"),
+		filepath.Join(home, "go", "bin", "ccc"),
+	}
+	foundCccPath := ""
+	for _, p := range cccPaths {
+		if _, err := os.Stat(p); err == nil {
+			foundCccPath = p
+			break
+		}
+	}
+	if foundCccPath != "" {
+		fmt.Printf("✅ %s\n", foundCccPath)
 	} else {
 		fmt.Println("❌ not found")
-		fmt.Println("   Run: mkdir -p ~/bin && cp ccc ~/bin/")
+		fmt.Println("   Run: go install . (from ccc repo) or cp ccc ~/bin/")
 		allGood = false
 	}
 

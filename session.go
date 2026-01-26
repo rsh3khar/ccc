@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -172,17 +173,36 @@ func transcribeAudio(config *Config, audioPath string) (string, error) {
 		}
 	}
 
-	cmd := exec.Command(whisperPath, audioPath, "--model", "small", "--output_format", "txt", "--output_dir", filepath.Dir(audioPath))
-	cmd.Stderr = os.Stderr
+	// Convert OGG to WAV first (whisper has issues with Telegram's OGG/Opus)
+	wavPath := strings.TrimSuffix(audioPath, filepath.Ext(audioPath)) + ".wav"
+	ffmpegPath := "/opt/homebrew/bin/ffmpeg"
+	if _, err := os.Stat(ffmpegPath); err != nil {
+		ffmpegPath = "ffmpeg" // fallback to PATH
+	}
+	convertCmd := exec.Command(ffmpegPath, "-y", "-i", audioPath, "-ar", "16000", "-ac", "1", wavPath)
+	var convertErr bytes.Buffer
+	convertCmd.Stderr = &convertErr
+	if err := convertCmd.Run(); err != nil {
+		return "", fmt.Errorf("ffmpeg convert failed: %w\n%s", err, convertErr.String())
+	}
+	defer os.Remove(wavPath)
+
+	cmd := exec.Command(whisperPath, wavPath, "--model", "small", "--output_format", "txt", "--output_dir", filepath.Dir(audioPath))
+	// Ensure ffmpeg is in PATH for whisper's internal use
+	cmd.Env = append(os.Environ(), "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("whisper failed: %w (set transcription_cmd in config for custom transcription)", err)
+		return "", fmt.Errorf("whisper failed: %v\nstderr: %s", err, stderr.String())
 	}
 
-	// Read the transcription
-	txtPath := strings.TrimSuffix(audioPath, filepath.Ext(audioPath)) + ".txt"
+	// Read the transcription (based on wav filename now)
+	txtPath := strings.TrimSuffix(wavPath, ".wav") + ".txt"
 	content, err := os.ReadFile(txtPath)
 	if err != nil {
-		return "", err
+		// List files in temp dir to debug
+		files, _ := filepath.Glob(filepath.Dir(audioPath) + "/voice_*")
+		return "", fmt.Errorf("transcription file not found: %w (files: %v, whisper stderr: %s)", err, files, stderr.String())
 	}
 
 	// Cleanup

@@ -311,8 +311,8 @@ func handleOutputHook() error {
 			if hookData.HookEventName == "PostToolUse" {
 				if msgIDData, err := os.ReadFile(msgIDFile); err == nil {
 					if msgID, err := strconv.ParseInt(string(msgIDData), 10, 64); err == nil && msgID > 0 {
-						// Only edit if message changed
-						if string(lastSent) != msg {
+						// Only edit if message changed (normalize for comparison)
+						if strings.TrimSpace(string(lastSent)) != strings.TrimSpace(msg) {
 							os.WriteFile(cacheFile, []byte(msg), 0600)
 							editMessage(config, config.GroupID, msgID, topicID, msg)
 						}
@@ -322,12 +322,19 @@ func handleOutputHook() error {
 			}
 
 			// PreToolUse or no existing message: check for duplicates, then send new
-			if string(lastSent) == msg {
+			// Normalize for comparison (trim whitespace)
+			if strings.TrimSpace(string(lastSent)) == strings.TrimSpace(msg) {
 				return nil // Skip duplicate
 			}
 			os.WriteFile(cacheFile, []byte(msg), 0600)
 
-			if msgID, err := sendMessageGetID(config, config.GroupID, topicID, msg); err == nil && msgID > 0 {
+			// Add tool name prefix for PreToolUse
+			finalMsg := msg
+			if hookData.HookEventName == "PreToolUse" && hookData.ToolName != "" {
+				finalMsg = fmt.Sprintf("🔧 %s\n\n%s", hookData.ToolName, msg)
+			}
+
+			if msgID, err := sendMessageGetID(config, config.GroupID, topicID, finalMsg); err == nil && msgID > 0 {
 				os.WriteFile(msgIDFile, []byte(strconv.FormatInt(msgID, 10)), 0600)
 			}
 		}

@@ -479,15 +479,29 @@ func send(message string) error {
 
 // Main listen loop
 func listen() error {
-	// Kill any other ccc listen instances to avoid Telegram API conflicts
-	myPid := os.Getpid()
-	cmd := exec.Command("pgrep", "-f", "ccc listen")
-	output, _ := cmd.Output()
-	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-		if pid, err := strconv.Atoi(line); err == nil && pid != myPid {
-			syscall.Kill(pid, syscall.SIGTERM)
-		}
+	// Small random delay to avoid race conditions when multiple instances start
+	time.Sleep(time.Duration(os.Getpid()%500) * time.Millisecond)
+
+	// Use a lock file to ensure only one instance runs
+	home, _ := os.UserHomeDir()
+	lockPath := filepath.Join(home, ".ccc.lock")
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return fmt.Errorf("failed to open lock file: %w", err)
 	}
+	defer lockFile.Close()
+
+	// Try to acquire exclusive lock (non-blocking)
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		fmt.Println("Another ccc listen instance is already running, exiting quietly")
+		os.Exit(0) // Exit with 0 so launchd doesn't restart
+	}
+	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+
+	// Write our PID to the lock file
+	lockFile.Truncate(0)
+	lockFile.Seek(0, 0)
+	fmt.Fprintf(lockFile, "%d\n", os.Getpid())
 
 	config, err := loadConfig()
 	if err != nil {
@@ -609,7 +623,7 @@ func listen() error {
 							} else if transcription != "" {
 								fmt.Printf("[voice] @%s: %s\n", msg.From.Username, transcription)
 								sendMessage(config, chatID, threadID, fmt.Sprintf("📝 %s", transcription))
-								sendToTmux(tmuxName, transcription)
+								sendToTmux(tmuxName, "[Audio transcription, may contain errors]: "+transcription)
 							}
 						}
 					}
@@ -824,19 +838,31 @@ func listen() error {
 			if isGroup && threadID > 0 {
 				// Reload config to get latest sessions
 				config, _ = loadConfig()
-				sessionName := getSessionByTopic(config, threadID)
-				if sessionName != "" {
+				sessName := getSessionByTopic(config, threadID)
+				if sessName != "" {
 					// Send to tmux session
-					tmuxName := "claude-" + sessionName
-					if tmuxSessionExists(tmuxName) {
-						if err := sendToTmux(tmuxName, text); err != nil {
-							sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Failed to send: %v", err))
+					tmuxName := sessionName(sessName)
+					if !tmuxSessionExists(tmuxName) {
+						// Auto-start session if not running
+						sessionInfo := config.Sessions[sessName]
+						workDir := sessionInfo.Path
+						if _, err := os.Stat(workDir); os.IsNotExist(err) {
+							os.MkdirAll(workDir, 0755)
 						}
-					} else {
-						sendMessage(config, chatID, threadID, "⚠️ Session not running. Use /new or /continue to restart.")
+						if err := createTmuxSession(tmuxName, workDir, false); err != nil {
+							sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Failed to start session: %v", err))
+							continue
+						}
+						sendMessage(config, chatID, threadID, fmt.Sprintf("🚀 Session '%s' auto-started", sessName))
+						time.Sleep(3 * time.Second) // Wait for Claude to fully start
 					}
-					continue
+					if err := sendToTmux(tmuxName, text); err != nil {
+						sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Failed to send: %v", err))
+					}
+				} else {
+					sendMessage(config, chatID, threadID, "⚠️ No session linked to this topic. Use /new <name> to create one.")
 				}
+				continue
 			}
 
 			// Private chat: run one-shot Claude

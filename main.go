@@ -23,7 +23,8 @@ type Config struct {
 	GroupID          int64                   `json:"group_id,omitempty"`          // Group with topics for sessions
 	Sessions         map[string]*SessionInfo `json:"sessions,omitempty"`          // session name -> session info
 	ProjectsDir      string                  `json:"projects_dir,omitempty"`      // Base directory for new projects (default: ~)
-	TranscriptionCmd string                  `json:"transcription_cmd,omitempty"` // Command for audio transcription (receives audio path, outputs text)
+	TranscriptionCmd  string                  `json:"transcription_cmd,omitempty"`  // Command for audio transcription (receives audio path, outputs text)
+	TranscriptionLang string                  `json:"transcription_lang,omitempty"` // Language code for whisper (e.g. "es", "en")
 	RelayURL         string                  `json:"relay_url,omitempty"`         // Relay server URL for large file transfers
 	Away             bool                    `json:"away"`
 	OAuthToken       string                  `json:"oauth_token,omitempty"`       // CLAUDE_CODE_OAUTH_TOKEN for headless mode
@@ -190,9 +191,15 @@ func main() {
 			} else {
 				fmt.Println("oauth_token: not set")
 			}
+			if config.TranscriptionLang != "" {
+				fmt.Printf("transcription_lang: %s\n", config.TranscriptionLang)
+			} else {
+				fmt.Println("transcription_lang: not set (auto-detect)")
+			}
 			fmt.Println("\nUsage: ccc config <key> <value>")
 			fmt.Println("  ccc config projects-dir ~/Projects")
 			fmt.Println("  ccc config oauth-token <token>")
+			fmt.Println("  ccc config transcription-lang es")
 			os.Exit(0)
 		}
 		key := os.Args[2]
@@ -212,6 +219,12 @@ func main() {
 					fmt.Println("configured")
 				} else {
 					fmt.Println("not set")
+				}
+			case "transcription-lang":
+				if config.TranscriptionLang != "" {
+					fmt.Println(config.TranscriptionLang)
+				} else {
+					fmt.Println("not set (auto-detect)")
 				}
 			default:
 				fmt.Fprintf(os.Stderr, "Unknown config key: %s\n", key)
@@ -242,6 +255,13 @@ func main() {
 				os.Exit(1)
 			}
 			fmt.Println("✅ Bot token saved")
+		case "transcription-lang":
+			config.TranscriptionLang = value
+			if err := saveConfig(config); err != nil {
+				fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("✅ Transcription language set to: %s\n", value)
 		default:
 			fmt.Fprintf(os.Stderr, "Unknown config key: %s\n", key)
 			os.Exit(1)
@@ -310,6 +330,12 @@ func main() {
 			os.Exit(1)
 		}
 		if err := installService(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "install-headless":
+		if err := installHeadlessService(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}

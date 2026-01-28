@@ -756,15 +756,7 @@ func listen() error {
 			}
 
 			if text == "/update" {
-				sendMessage(config, chatID, threadID, "🔄 Updating ccc...")
-				go func(cid, tid int64) {
-					output, err := executeCommand("go install github.com/kidandcat/ccc@latest")
-					if err != nil {
-						sendMessage(config, cid, tid, fmt.Sprintf("❌ Update failed:\n%s", output))
-					} else {
-						sendMessage(config, cid, tid, fmt.Sprintf("✅ ccc updated\n%s\n\nRestart the service to apply.", output))
-					}
-				}(chatID, threadID)
+				updateCCC(config, chatID, threadID)
 				continue
 			}
 

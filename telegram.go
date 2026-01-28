@@ -42,6 +42,38 @@ func telegramClientGet(client *http.Client, token string, url string) (*http.Res
 	return resp, nil
 }
 
+// updateCCC downloads the latest ccc binary and restarts by exiting (service manager restarts)
+func updateCCC(config *Config, chatID, threadID int64) {
+	sendMessage(config, chatID, threadID, "🔄 Updating ccc...")
+
+	// go install puts binary in ~/go/bin/ccc
+	output, err := executeCommand("go install github.com/kidandcat/ccc@latest")
+	if err != nil {
+		sendMessage(config, chatID, threadID, fmt.Sprintf("❌ go install failed:\n%s", output))
+		return
+	}
+
+	// If current binary is not in ~/go/bin, copy the new one over it
+	home, _ := os.UserHomeDir()
+	gobin := filepath.Join(home, "go", "bin", "ccc")
+	if cccPath != gobin {
+		if _, err := os.Stat(gobin); err == nil {
+			data, err := os.ReadFile(gobin)
+			if err != nil {
+				sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Failed to read new binary: %v", err))
+				return
+			}
+			if err := os.WriteFile(cccPath, data, 0755); err != nil {
+				sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Failed to write binary to %s: %v", cccPath, err))
+				return
+			}
+		}
+	}
+
+	sendMessage(config, chatID, threadID, "✅ Updated. Restarting...")
+	os.Exit(0)
+}
+
 func telegramAPI(config *Config, method string, params url.Values) (*TelegramResponse, error) {
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/%s", config.BotToken, method)
 	resp, err := http.PostForm(apiURL, params)

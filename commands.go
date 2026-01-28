@@ -22,7 +22,11 @@ func executeCommand(cmdStr string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "zsh", "-i", "-l", "-c", cmdStr)
+	shell := "bash"
+	if _, err := exec.LookPath("zsh"); err == nil {
+		shell = "zsh"
+	}
+	cmd := exec.CommandContext(ctx, shell, "-l", "-c", cmdStr)
 	cmd.Dir, _ = os.UserHomeDir()
 
 	var stdout, stderr bytes.Buffer
@@ -437,6 +441,18 @@ func doctor() {
 	} else {
 		fmt.Println("⚠️  not configured (optional, for voice messages)")
 		fmt.Println("   Set transcription_cmd in ~/.ccc.json or install whisper")
+	}
+
+	// Check OAuth token (for headless mode)
+	fmt.Print("oauth token....... ")
+	if config != nil && config.OAuthToken != "" {
+		fmt.Println("✅ configured (in config)")
+	} else if os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") != "" {
+		fmt.Println("✅ configured (from environment)")
+	} else {
+		fmt.Println("⚠️  not set (needed for headless mode)")
+		fmt.Println("   Run: ccc config oauth-token <token>")
+		fmt.Println("   Generate with: claude setup-token")
 	}
 
 	fmt.Println()
@@ -919,8 +935,10 @@ COMMANDS:
     doctor                  Check all dependencies and configuration
     config                  Show/set configuration values
     config projects-dir <path>  Set base directory for projects
+    config oauth-token <token>  Set OAuth token for headless mode
     setgroup                Configure Telegram group for topics (if skipped during setup)
     listen                  Start the Telegram bot listener manually
+    headless                Start headless listener (no tmux, uses claude -p for VPS)
     install                 Install Claude hook manually
     send <file>             Send file to current session's Telegram topic
     relay [port]            Start relay server for large files (default: 8080)

@@ -11,8 +11,9 @@ const version = "1.0.0"
 
 // SessionInfo stores information about a session
 type SessionInfo struct {
-	TopicID int64  `json:"topic_id"`
-	Path    string `json:"path"`
+	TopicID         int64  `json:"topic_id"`
+	Path            string `json:"path"`
+	ClaudeSessionID string `json:"claude_session_id,omitempty"` // UUID for headless --resume
 }
 
 // Config stores bot configuration and session mappings
@@ -25,6 +26,7 @@ type Config struct {
 	TranscriptionCmd string                  `json:"transcription_cmd,omitempty"` // Command for audio transcription (receives audio path, outputs text)
 	RelayURL         string                  `json:"relay_url,omitempty"`         // Relay server URL for large file transfers
 	Away             bool                    `json:"away"`
+	OAuthToken       string                  `json:"oauth_token,omitempty"`       // CLAUDE_CODE_OAUTH_TOKEN for headless mode
 }
 
 // TelegramMessage represents a Telegram message
@@ -183,8 +185,14 @@ func main() {
 		if len(os.Args) < 3 {
 			// Show current config
 			fmt.Printf("projects_dir: %s\n", getProjectsDir(config))
+			if config.OAuthToken != "" {
+				fmt.Println("oauth_token: configured")
+			} else {
+				fmt.Println("oauth_token: not set")
+			}
 			fmt.Println("\nUsage: ccc config <key> <value>")
 			fmt.Println("  ccc config projects-dir ~/Projects")
+			fmt.Println("  ccc config oauth-token <token>")
 			os.Exit(0)
 		}
 		key := os.Args[2]
@@ -193,6 +201,18 @@ func main() {
 			switch key {
 			case "projects-dir":
 				fmt.Println(getProjectsDir(config))
+			case "oauth-token":
+				if config.OAuthToken != "" {
+					fmt.Println("configured")
+				} else {
+					fmt.Println("not set")
+				}
+			case "bot-token":
+				if config.BotToken != "" {
+					fmt.Println("configured")
+				} else {
+					fmt.Println("not set")
+				}
 			default:
 				fmt.Fprintf(os.Stderr, "Unknown config key: %s\n", key)
 				os.Exit(1)
@@ -208,6 +228,20 @@ func main() {
 				os.Exit(1)
 			}
 			fmt.Printf("✅ projects_dir set to: %s\n", getProjectsDir(config))
+		case "oauth-token":
+			config.OAuthToken = value
+			if err := saveConfig(config); err != nil {
+				fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("✅ OAuth token saved")
+		case "bot-token":
+			config.BotToken = value
+			if err := saveConfig(config); err != nil {
+				fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("✅ Bot token saved")
 		default:
 			fmt.Fprintf(os.Stderr, "Unknown config key: %s\n", key)
 			os.Exit(1)
@@ -293,6 +327,23 @@ func main() {
 			os.Exit(1)
 		}
 		if err := handleSendFile(os.Args[2]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "headless":
+		if err := runHeadless(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "headless-start":
+		// Usage: ccc headless-start <name> <path> <prompt>
+		if len(os.Args) < 5 {
+			fmt.Fprintf(os.Stderr, "Usage: ccc headless-start <name> <path> <prompt>\n")
+			os.Exit(1)
+		}
+		if err := headlessStart(os.Args[2], os.Args[3], strings.Join(os.Args[4:], " ")); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}

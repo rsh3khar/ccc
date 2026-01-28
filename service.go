@@ -99,3 +99,45 @@ WantedBy=default.target
 	fmt.Println("✅ Service installed and started (systemd)")
 	return nil
 }
+
+func installHeadlessService() error {
+	home, _ := os.UserHomeDir()
+	serviceDir := filepath.Join(home, ".config", "systemd", "user")
+	if err := os.MkdirAll(serviceDir, 0755); err != nil {
+		return fmt.Errorf("failed to create systemd dir: %w", err)
+	}
+
+	// Load config to get oauth token for environment
+	envLine := ""
+	if config, err := loadConfig(); err == nil && config.OAuthToken != "" {
+		envLine = fmt.Sprintf("Environment=CLAUDE_CODE_OAUTH_TOKEN=%s", config.OAuthToken)
+	}
+
+	servicePath := filepath.Join(serviceDir, "ccc-headless.service")
+	service := fmt.Sprintf(`[Unit]
+Description=Claude Code Companion (Headless)
+After=network.target
+
+[Service]
+ExecStart=%s headless
+Restart=always
+RestartSec=10
+%s
+
+[Install]
+WantedBy=default.target
+`, cccPath, envLine)
+
+	if err := os.WriteFile(servicePath, []byte(service), 0644); err != nil {
+		return fmt.Errorf("failed to write service file: %w", err)
+	}
+
+	exec.Command("systemctl", "--user", "daemon-reload").Run()
+	exec.Command("systemctl", "--user", "enable", "ccc-headless").Run()
+	if err := exec.Command("systemctl", "--user", "start", "ccc-headless").Run(); err != nil {
+		return fmt.Errorf("failed to start headless service: %w", err)
+	}
+
+	fmt.Println("✅ Headless service installed and started (systemd)")
+	return nil
+}

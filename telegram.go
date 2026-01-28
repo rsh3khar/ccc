@@ -385,13 +385,7 @@ func createForumTopic(config *Config, name string) (int64, error) {
 func setBotCommands(botToken string) {
 	commands := `{
 		"commands": [
-			{"command": "ping", "description": "Check if bot is alive"},
-			{"command": "away", "description": "Toggle away mode"},
 			{"command": "new", "description": "Create/restart session: /new <name>"},
-			{"command": "continue", "description": "Continue session: /continue <name>"},
-			{"command": "kill", "description": "Kill session: /kill <name>"},
-			{"command": "list", "description": "List active sessions"},
-			{"command": "setdir", "description": "Set projects directory: /setdir ~/Projects"},
 			{"command": "c", "description": "Execute shell command: /c <cmd>"},
 			{"command": "update", "description": "Update ccc binary from GitHub"}
 		]

@@ -298,70 +298,6 @@ func runHeadless() error {
 			fmt.Printf("[headless][%s] @%s: %s\n", msg.Chat.Type, msg.From.Username, text)
 
 			// Handle commands
-			if text == "/ping" {
-				sendMessage(config, chatID, threadID, "pong! (headless)")
-				continue
-			}
-
-			if text == "/away" {
-				config.Away = !config.Away
-				saveConfig(config)
-				if config.Away {
-					sendMessage(config, chatID, threadID, "🚶 Away mode ON")
-				} else {
-					sendMessage(config, chatID, threadID, "🏠 Away mode OFF")
-				}
-				continue
-			}
-
-			if text == "/list" {
-				var sessionList []string
-				for name, info := range config.Sessions {
-					status := "idle"
-					if _, busy := busySessions.Load(name); busy {
-						status = "running"
-					}
-					resumed := ""
-					if info.ClaudeSessionID != "" {
-						resumed = " (resumable)"
-					}
-					sessionList = append(sessionList, fmt.Sprintf("%s [%s]%s", name, status, resumed))
-				}
-				if len(sessionList) == 0 {
-					sendMessage(config, chatID, threadID, "No sessions")
-				} else {
-					sendMessage(config, chatID, threadID, "Sessions:\n• "+strings.Join(sessionList, "\n• "))
-				}
-				continue
-			}
-
-			if strings.HasPrefix(text, "/setdir") {
-				arg := strings.TrimSpace(strings.TrimPrefix(text, "/setdir"))
-				if arg == "" {
-					currentDir := getProjectsDir(config)
-					sendMessage(config, chatID, threadID, fmt.Sprintf("📁 Projects directory: %s\n\nUsage: /setdir ~/Projects", currentDir))
-				} else {
-					config.ProjectsDir = arg
-					saveConfig(config)
-					resolvedPath := getProjectsDir(config)
-					sendMessage(config, chatID, threadID, fmt.Sprintf("✅ Projects directory set to: %s", resolvedPath))
-				}
-				continue
-			}
-
-			if strings.HasPrefix(text, "/kill ") {
-				name := strings.TrimSpace(strings.TrimPrefix(text, "/kill "))
-				if _, exists := config.Sessions[name]; !exists {
-					sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Session '%s' not found", name))
-				} else {
-					delete(config.Sessions, name)
-					saveConfig(config)
-					sendMessage(config, chatID, threadID, fmt.Sprintf("🗑️ Session '%s' removed", name))
-					config, _ = loadConfig()
-				}
-				continue
-			}
-
 			if strings.HasPrefix(text, "/c ") {
 				cmdStr := strings.TrimPrefix(text, "/c ")
 				output, err := executeCommand(cmdStr)
@@ -377,26 +313,14 @@ func runHeadless() error {
 				continue
 			}
 
-			// /new and /continue commands
-			isNewCmd := strings.HasPrefix(text, "/new")
-			isContinueCmd := strings.HasPrefix(text, "/continue")
-			if (isNewCmd || isContinueCmd) && isGroup {
+			// /new command
+			if strings.HasPrefix(text, "/new") && isGroup {
 				config, _ = loadConfig()
-				var arg string
-				if isNewCmd {
-					arg = strings.TrimSpace(strings.TrimPrefix(text, "/new"))
-				} else {
-					arg = strings.TrimSpace(strings.TrimPrefix(text, "/continue"))
-				}
-				cmdName := "/new"
-				if isContinueCmd {
-					cmdName = "/continue"
-				}
+				arg := strings.TrimSpace(strings.TrimPrefix(text, "/new"))
 
 				if arg != "" {
-					// Create new session + topic
 					if _, exists := config.Sessions[arg]; exists {
-						sendMessage(config, chatID, threadID, fmt.Sprintf("⚠️ Session '%s' already exists. Use %s without args in that topic to restart.", arg, cmdName))
+						sendMessage(config, chatID, threadID, fmt.Sprintf("⚠️ Session '%s' already exists. Use /new without args in that topic to restart.", arg))
 						continue
 					}
 					topicID, err := createForumTopic(config, arg)
@@ -421,20 +345,14 @@ func runHeadless() error {
 				if threadID > 0 {
 					sessName := getSessionByTopic(config, threadID)
 					if sessName == "" {
-						sendMessage(config, chatID, threadID, fmt.Sprintf("❌ No session mapped to this topic. Use %s <name> to create one.", cmdName))
+						sendMessage(config, chatID, threadID, "❌ No session mapped to this topic. Use /new <name> to create one.")
 						continue
 					}
-					if isContinueCmd {
-						// Keep session ID for continuity
-						sendMessage(config, chatID, threadID, fmt.Sprintf("🚀 Session '%s' will continue from last conversation", sessName))
-					} else {
-						// Reset session ID
-						config.Sessions[sessName].ClaudeSessionID = ""
-						saveConfig(config)
-						sendMessage(config, chatID, threadID, fmt.Sprintf("🚀 Session '%s' reset (new conversation)", sessName))
-					}
+					config.Sessions[sessName].ClaudeSessionID = ""
+					saveConfig(config)
+					sendMessage(config, chatID, threadID, fmt.Sprintf("🚀 Session '%s' reset (new conversation)", sessName))
 				} else {
-					sendMessage(config, chatID, threadID, fmt.Sprintf("Usage: %s <name> to create a new session", cmdName))
+					sendMessage(config, chatID, threadID, "Usage: /new <name> to create a new session")
 				}
 				continue
 			}

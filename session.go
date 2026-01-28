@@ -187,7 +187,11 @@ func transcribeAudio(config *Config, audioPath string) (string, error) {
 	}
 	defer os.Remove(wavPath)
 
-	cmd := exec.Command(whisperPath, wavPath, "--model", "small", "--output_format", "txt", "--output_dir", filepath.Dir(audioPath))
+	whisperArgs := []string{wavPath, "--model", "small", "--output_format", "txt", "--output_dir", filepath.Dir(audioPath)}
+	if config.TranscriptionLang != "" {
+		whisperArgs = append(whisperArgs, "--language", config.TranscriptionLang)
+	}
+	cmd := exec.Command(whisperPath, whisperArgs...)
 	// Ensure ffmpeg is in PATH for whisper's internal use
 	cmd.Env = append(os.Environ(), "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
 	var stderr bytes.Buffer

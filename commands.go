@@ -693,58 +693,6 @@ func listen() error {
 			fmt.Printf("[%s] @%s: %s\n", msg.Chat.Type, msg.From.Username, text)
 
 			// Handle commands
-			if text == "/ping" {
-				sendMessage(config, chatID, threadID, "pong!")
-				continue
-			}
-
-			if text == "/away" {
-				config.Away = !config.Away
-				saveConfig(config)
-				if config.Away {
-					sendMessage(config, chatID, threadID, "🚶 Away mode ON")
-				} else {
-					sendMessage(config, chatID, threadID, "🏠 Away mode OFF")
-				}
-				continue
-			}
-
-			if text == "/list" {
-				sessions, _ := listTmuxSessions()
-				if len(sessions) == 0 {
-					sendMessage(config, chatID, threadID, "No active sessions")
-				} else {
-					sendMessage(config, chatID, threadID, "Sessions:\n• "+strings.Join(sessions, "\n• "))
-				}
-				continue
-			}
-
-			if strings.HasPrefix(text, "/setdir") {
-				arg := strings.TrimSpace(strings.TrimPrefix(text, "/setdir"))
-				if arg == "" {
-					currentDir := getProjectsDir(config)
-					sendMessage(config, chatID, threadID, fmt.Sprintf("📁 Projects directory: %s\n\nUsage: /setdir ~/Projects", currentDir))
-				} else {
-					config.ProjectsDir = arg
-					saveConfig(config)
-					resolvedPath := getProjectsDir(config)
-					sendMessage(config, chatID, threadID, fmt.Sprintf("✅ Projects directory set to: %s", resolvedPath))
-				}
-				continue
-			}
-
-			if strings.HasPrefix(text, "/kill ") {
-				name := strings.TrimPrefix(text, "/kill ")
-				name = strings.TrimSpace(name)
-				if err := killSession(config, name); err != nil {
-					sendMessage(config, chatID, threadID, fmt.Sprintf("❌ %v", err))
-				} else {
-					sendMessage(config, chatID, threadID, fmt.Sprintf("🗑️ Session '%s' killed", name))
-					config, _ = loadConfig()
-				}
-				continue
-			}
-
 			if strings.HasPrefix(text, "/c ") {
 				cmdStr := strings.TrimPrefix(text, "/c ")
 				output, err := executeCommand(cmdStr)
@@ -760,39 +708,23 @@ func listen() error {
 				continue
 			}
 
-			// /new and /continue commands - create/restart session
-			isNewCmd := strings.HasPrefix(text, "/new")
-			isContinueCmd := strings.HasPrefix(text, "/continue")
-			if (isNewCmd || isContinueCmd) && isGroup {
+			// /new command - create/restart session
+			if strings.HasPrefix(text, "/new") && isGroup {
 				config, _ = loadConfig()
-				continueSession := isContinueCmd
-				var arg string
-				if isNewCmd {
-					arg = strings.TrimSpace(strings.TrimPrefix(text, "/new"))
-				} else {
-					arg = strings.TrimSpace(strings.TrimPrefix(text, "/continue"))
-				}
-				cmdName := "/new"
-				if continueSession {
-					cmdName = "/continue"
-				}
+				arg := strings.TrimSpace(strings.TrimPrefix(text, "/new"))
 
-				// /new <name> or /continue <name> - create brand new session + topic
+				// /new <name> - create brand new session + topic
 				if arg != "" {
-					// Check if session already exists
 					if _, exists := config.Sessions[arg]; exists {
-						sendMessage(config, chatID, threadID, fmt.Sprintf("⚠️ Session '%s' already exists. Use %s without args in that topic to restart.", arg, cmdName))
+						sendMessage(config, chatID, threadID, fmt.Sprintf("⚠️ Session '%s' already exists. Use /new without args in that topic to restart.", arg))
 						continue
 					}
-					// Create Telegram topic
 					topicID, err := createForumTopic(config, arg)
 					if err != nil {
 						sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Failed to create topic: %v", err))
 						continue
 					}
-					// Resolve and create work directory
 					workDir := resolveProjectPath(config, arg)
-					// Save mapping with full path
 					config.Sessions[arg] = &SessionInfo{
 						TopicID: topicID,
 						Path:    workDir,
@@ -801,12 +733,10 @@ func listen() error {
 					if _, err := os.Stat(workDir); os.IsNotExist(err) {
 						os.MkdirAll(workDir, 0755)
 					}
-					// Create tmux session
 					tmuxName := "claude-" + arg
-					if err := createTmuxSession(tmuxName, workDir, continueSession); err != nil {
+					if err := createTmuxSession(tmuxName, workDir, false); err != nil {
 						sendMessage(config, config.GroupID, topicID, fmt.Sprintf("❌ Failed to start tmux: %v", err))
 					} else {
-						// Verify session is actually running
 						time.Sleep(500 * time.Millisecond)
 						if tmuxSessionExists(tmuxName) {
 							sendMessage(config, config.GroupID, topicID, fmt.Sprintf("🚀 Session '%s' started!\n\nSend messages here to interact with Claude.", arg))
@@ -821,36 +751,30 @@ func listen() error {
 				if threadID > 0 {
 					sessionName := getSessionByTopic(config, threadID)
 					if sessionName == "" {
-						sendMessage(config, chatID, threadID, fmt.Sprintf("❌ No session mapped to this topic. Use %s <name> to create one.", cmdName))
+						sendMessage(config, chatID, threadID, "❌ No session mapped to this topic. Use /new <name> to create one.")
 						continue
 					}
 					tmuxName := "claude-" + sessionName
-					// Kill existing session if running
 					if tmuxSessionExists(tmuxName) {
 						killTmuxSession(tmuxName)
 						time.Sleep(300 * time.Millisecond)
 					}
-					// Resolve and create work directory
 					workDir := resolveProjectPath(config, sessionName)
 					if _, err := os.Stat(workDir); os.IsNotExist(err) {
 						os.MkdirAll(workDir, 0755)
 					}
-					if err := createTmuxSession(tmuxName, workDir, continueSession); err != nil {
+					if err := createTmuxSession(tmuxName, workDir, false); err != nil {
 						sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Failed to start: %v", err))
 					} else {
 						time.Sleep(500 * time.Millisecond)
 						if tmuxSessionExists(tmuxName) {
-							action := "restarted"
-							if continueSession {
-								action = "continued"
-							}
-							sendMessage(config, chatID, threadID, fmt.Sprintf("🚀 Session '%s' %s", sessionName, action))
+							sendMessage(config, chatID, threadID, fmt.Sprintf("🚀 Session '%s' restarted", sessionName))
 						} else {
-							sendMessage(config, chatID, threadID, fmt.Sprintf("⚠️ Session died immediately"))
+							sendMessage(config, chatID, threadID, "⚠️ Session died immediately")
 						}
 					}
 				} else {
-					sendMessage(config, chatID, threadID, fmt.Sprintf("Usage: %s <name> to create a new session", cmdName))
+					sendMessage(config, chatID, threadID, "Usage: /new <name> to create a new session")
 				}
 				continue
 			}
@@ -951,16 +875,9 @@ COMMANDS:
     hook                    Handle Claude hook (internal)
 
 TELEGRAM COMMANDS:
-    /ping                   Check if bot is alive
-    /away                   Toggle away mode
     /new <name>             Create new session with topic (in projects_dir)
     /new ~/path/name        Create session with custom path
-    /new                    Restart session in current topic (kills if running)
-    /continue <name>        Create new session with -c flag
-    /continue               Restart session with -c flag (kills if running)
-    /kill <name>            Kill a session
-    /list                   List active sessions
-    /setdir <path>          Set base directory for projects
+    /new                    Restart session in current topic
     /c <cmd>                Execute shell command
     /update                 Update ccc binary from GitHub
 

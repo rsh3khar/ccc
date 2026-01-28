@@ -128,7 +128,7 @@ RestartSec=10
 WantedBy=default.target
 `, cccPath, envLine)
 
-	if err := os.WriteFile(servicePath, []byte(service), 0644); err != nil {
+	if err := os.WriteFile(servicePath, []byte(service), 0600); err != nil {
 		return fmt.Errorf("failed to write service file: %w", err)
 	}
 

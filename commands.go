@@ -120,12 +120,12 @@ func setup(botToken string) error {
 
 	offset := 0
 	for {
-		resp, err := http.Get(fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?offset=%d&timeout=30", botToken, offset))
+		resp, err := telegramGet(botToken, fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?offset=%d&timeout=30", botToken, offset))
 		if err != nil {
 			return fmt.Errorf("failed to get updates: %w", err)
 		}
 
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 		resp.Body.Close()
 
 		var updates TelegramUpdate
@@ -167,12 +167,12 @@ step2:
 
 	for time.Now().Before(deadline) {
 		reqURL := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?offset=%d&timeout=5", config.BotToken, offset)
-		resp, err := client.Get(reqURL)
+		resp, err := telegramClientGet(client, config.BotToken, reqURL)
 		if err != nil {
 			continue
 		}
 
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 		resp.Body.Close()
 
 		var updates TelegramUpdate
@@ -244,12 +244,12 @@ func setGroup(config *Config) error {
 
 	for {
 		reqURL := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?offset=%d&timeout=30", config.BotToken, offset)
-		resp, err := client.Get(reqURL)
+		resp, err := telegramClientGet(client, config.BotToken, reqURL)
 		if err != nil {
 			return err
 		}
 
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 		resp.Body.Close()
 
 		var updates TelegramUpdate
@@ -544,14 +544,14 @@ func listen() error {
 
 	for {
 		reqURL := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?offset=%d&timeout=30", config.BotToken, offset)
-		resp, err := client.Get(reqURL)
+		resp, err := telegramClientGet(client, config.BotToken, reqURL)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Network error: %v (retrying...)\n", err)
 			time.Sleep(5 * time.Second)
 			continue
 		}
 
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 		resp.Body.Close()
 
 		var updates TelegramUpdate
@@ -752,6 +752,19 @@ func listen() error {
 					output = fmt.Sprintf("⚠️ %s\n\nExit: %v", output, err)
 				}
 				sendMessage(config, chatID, threadID, output)
+				continue
+			}
+
+			if text == "/update" {
+				sendMessage(config, chatID, threadID, "🔄 Updating ccc...")
+				go func(cid, tid int64) {
+					output, err := executeCommand("go install github.com/kidandcat/ccc@latest")
+					if err != nil {
+						sendMessage(config, cid, tid, fmt.Sprintf("❌ Update failed:\n%s", output))
+					} else {
+						sendMessage(config, cid, tid, fmt.Sprintf("✅ ccc updated\n%s\n\nRestart the service to apply.", output))
+					}
+				}(chatID, threadID)
 				continue
 			}
 
@@ -957,6 +970,7 @@ TELEGRAM COMMANDS:
     /list                   List active sessions
     /setdir <path>          Set base directory for projects
     /c <cmd>                Execute shell command
+    /update                 Update ccc binary from GitHub
 
 FLAGS:
     -h, --help              Show this help

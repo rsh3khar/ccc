@@ -152,14 +152,14 @@ func runHeadless() error {
 
 	for {
 		reqURL := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?offset=%d&timeout=30", config.BotToken, offset)
-		resp, err := client.Get(reqURL)
+		resp, err := telegramClientGet(client, config.BotToken, reqURL)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Network error: %v (retrying...)\n", err)
 			time.Sleep(5 * time.Second)
 			continue
 		}
 
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 		resp.Body.Close()
 
 		var updates TelegramUpdate
@@ -369,6 +369,19 @@ func runHeadless() error {
 					output = fmt.Sprintf("⚠️ %s\n\nExit: %v", output, err)
 				}
 				sendMessage(config, chatID, threadID, output)
+				continue
+			}
+
+			if text == "/update" {
+				sendMessage(config, chatID, threadID, "🔄 Updating ccc...")
+				go func(cid, tid int64) {
+					output, err := executeCommand("go install github.com/kidandcat/ccc@latest")
+					if err != nil {
+						sendMessage(config, cid, tid, fmt.Sprintf("❌ Update failed:\n%s", output))
+					} else {
+						sendMessage(config, cid, tid, fmt.Sprintf("✅ ccc updated\n%s\n\nRestart the service to apply.", output))
+					}
+				}(chatID, threadID)
 				continue
 			}
 

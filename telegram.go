@@ -14,15 +14,43 @@ import (
 	"time"
 )
 
+const maxResponseSize = 10 * 1024 * 1024 // 10MB
+
+// redactTokenError replaces the bot token in error messages with "***"
+func redactTokenError(err error, token string) error {
+	if err == nil || token == "" {
+		return err
+	}
+	return fmt.Errorf("%s", strings.ReplaceAll(err.Error(), token, "***"))
+}
+
+// telegramGet performs an HTTP GET and redacts the bot token from any errors
+func telegramGet(token string, url string) (*http.Response, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, redactTokenError(err, token)
+	}
+	return resp, nil
+}
+
+// telegramClientGet performs an HTTP GET with a custom client and redacts the bot token from any errors
+func telegramClientGet(client *http.Client, token string, url string) (*http.Response, error) {
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, redactTokenError(err, token)
+	}
+	return resp, nil
+}
+
 func telegramAPI(config *Config, method string, params url.Values) (*TelegramResponse, error) {
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/%s", config.BotToken, method)
 	resp, err := http.PostForm(apiURL, params)
 	if err != nil {
-		return nil, err
+		return nil, redactTokenError(err, config.BotToken)
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	var result TelegramResponse
 	json.Unmarshal(body, &result)
 	return &result, nil
@@ -243,7 +271,7 @@ func sendFile(config *Config, chatID int64, threadID int64, filePath string, cap
 		body,
 	)
 	if err != nil {
-		return err
+		return redactTokenError(err, config.BotToken)
 	}
 	defer resp.Body.Close()
 
@@ -258,7 +286,7 @@ func sendFile(config *Config, chatID int64, threadID int64, filePath string, cap
 // downloadTelegramFile downloads a file from Telegram
 func downloadTelegramFile(config *Config, fileID string, destPath string) error {
 	// Get file path from Telegram
-	resp, err := http.Get(fmt.Sprintf("https://api.telegram.org/bot%s/getFile?file_id=%s", config.BotToken, fileID))
+	resp, err := telegramGet(config.BotToken, fmt.Sprintf("https://api.telegram.org/bot%s/getFile?file_id=%s", config.BotToken, fileID))
 	if err != nil {
 		return err
 	}
@@ -279,7 +307,7 @@ func downloadTelegramFile(config *Config, fileID string, destPath string) error 
 
 	// Download the file
 	fileURL := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", config.BotToken, result.Result.FilePath)
-	fileResp, err := http.Get(fileURL)
+	fileResp, err := telegramGet(config.BotToken, fileURL)
 	if err != nil {
 		return err
 	}
@@ -332,7 +360,8 @@ func setBotCommands(botToken string) {
 			{"command": "kill", "description": "Kill session: /kill <name>"},
 			{"command": "list", "description": "List active sessions"},
 			{"command": "setdir", "description": "Set projects directory: /setdir ~/Projects"},
-			{"command": "c", "description": "Execute shell command: /c <cmd>"}
+			{"command": "c", "description": "Execute shell command: /c <cmd>"},
+			{"command": "update", "description": "Update ccc binary from GitHub"}
 		]
 	}`
 
@@ -342,7 +371,7 @@ func setBotCommands(botToken string) {
 		strings.NewReader(commands),
 	)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to set bot commands: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to set bot commands: %v\n", redactTokenError(err, botToken))
 		return
 	}
 	resp.Body.Close()

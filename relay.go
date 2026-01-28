@@ -78,7 +78,12 @@ func handleSendFile(filePath string) error {
 	token := hex.EncodeToString(tokenBytes)
 
 	// Register with relay
-	regData := fmt.Sprintf(`{"token":"%s","filename":"%s","size":%d}`, token, fileName, fileSize)
+	regPayload, _ := json.Marshal(map[string]interface{}{
+		"token":    token,
+		"filename": fileName,
+		"size":     fileSize,
+	})
+	regData := string(regPayload)
 	resp, err := http.Post(relayURL+"/register", "application/json", strings.NewReader(regData))
 	if err != nil {
 		return fmt.Errorf("failed to register with relay: %w", err)
@@ -121,7 +126,7 @@ func streamFileToRelay(relayURL, token, filePath, fileName string, fileSize int6
 			if err != nil {
 				continue
 			}
-			body, _ := io.ReadAll(resp.Body)
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 			resp.Body.Close()
 
 			status := string(body)
@@ -354,7 +359,14 @@ func runRelayServer(port string) {
 
 		fmt.Printf("📥 Download started: %s (%s) from %s\n", t.Filename, token[:8], r.UserAgent())
 
-		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, t.Filename))
+		// Sanitize filename: remove quotes, newlines, and control characters
+		safeName := strings.Map(func(r rune) rune {
+			if r == '"' || r == '\n' || r == '\r' || r < 32 {
+				return '_'
+			}
+			return r
+		}, t.Filename)
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, safeName))
 		w.Header().Set("Content-Type", "application/octet-stream")
 		if t.Size > 0 {
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", t.Size))

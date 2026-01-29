@@ -27,7 +27,7 @@ deps:
 	@if [ "$(UNAME)" = "Darwin" ]; then \
 		printf 'prefix=%s\nlibdir=$${prefix}/lib\n\nName: libwhisper-darwin\nDescription: whisper.cpp (darwin)\nVersion: 0.0.0\nLibs: -L$${libdir} -lwhisper -lggml -lggml-base -lggml-cpu -lggml-blas -lggml-metal -lstdc++ -framework Accelerate -framework Metal -framework Foundation -framework CoreGraphics\n' "$(PREFIX)" > "$(PC_DIR)/libwhisper-darwin.pc"; \
 	else \
-		printf 'prefix=%s\nlibdir=$${prefix}/lib\n\nName: libwhisper-linux\nDescription: whisper.cpp (linux)\nVersion: 0.0.0\nLibs: -L$${libdir} -lwhisper -lggml -lggml-base -lggml-cpu -lm -lstdc++ -lpthread\n' "$(PREFIX)" > "$(PC_DIR)/libwhisper-linux.pc"; \
+		printf 'prefix=%s\nlibdir=$${prefix}/lib\n\nName: libwhisper-linux\nDescription: whisper.cpp (linux)\nVersion: 0.0.0\nCflags: -fopenmp\nLibs: -L$${libdir} -lwhisper -lggml -lggml-base -lggml-cpu -lgomp -lm -lstdc++ -lpthread\n' "$(PREFIX)" > "$(PC_DIR)/libwhisper-linux.pc"; \
 	fi
 
 build: deps

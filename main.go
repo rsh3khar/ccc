@@ -13,7 +13,7 @@ const version = "1.0.0"
 type SessionInfo struct {
 	TopicID         int64  `json:"topic_id"`
 	Path            string `json:"path"`
-	ClaudeSessionID string `json:"claude_session_id,omitempty"` // UUID for headless --resume
+	ClaudeSessionID string `json:"claude_session_id,omitempty"`
 }
 
 // Config stores bot configuration and session mappings
@@ -27,7 +27,7 @@ type Config struct {
 	TranscriptionLang string                  `json:"transcription_lang,omitempty"` // Language code for whisper (e.g. "es", "en")
 	RelayURL         string                  `json:"relay_url,omitempty"`         // Relay server URL for large file transfers
 	Away             bool                    `json:"away"`
-	OAuthToken       string                  `json:"oauth_token,omitempty"`       // CLAUDE_CODE_OAUTH_TOKEN for headless mode
+	OAuthToken       string                  `json:"oauth_token,omitempty"`
 }
 
 // TelegramMessage represents a Telegram message
@@ -46,6 +46,7 @@ type TelegramMessage struct {
 	ReplyToMessage *TelegramMessage `json:"reply_to_message,omitempty"`
 	Voice          *TelegramVoice   `json:"voice,omitempty"`
 	Photo          []TelegramPhoto  `json:"photo,omitempty"`
+	Document       *TelegramDocument `json:"document,omitempty"`
 	Caption        string           `json:"caption,omitempty"`
 }
 
@@ -58,6 +59,12 @@ type TelegramPhoto struct {
 	FileID   string `json:"file_id"`
 	Width    int    `json:"width"`
 	Height   int    `json:"height"`
+	FileSize int    `json:"file_size"`
+}
+
+type TelegramDocument struct {
+	FileID   string `json:"file_id"`
+	FileName string `json:"file_name"`
 	FileSize int    `json:"file_size"`
 }
 
@@ -334,12 +341,6 @@ func main() {
 			os.Exit(1)
 		}
 
-	case "install-headless":
-		if err := installHeadlessService(); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-
 	case "uninstall":
 		if err := uninstallHook(); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: Could not uninstall hooks: %v\n", err)
@@ -353,23 +354,6 @@ func main() {
 			os.Exit(1)
 		}
 		if err := handleSendFile(os.Args[2]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-
-	case "headless":
-		if err := runHeadless(); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-
-	case "headless-start":
-		// Usage: ccc headless-start <name> <path> <prompt>
-		if len(os.Args) < 5 {
-			fmt.Fprintf(os.Stderr, "Usage: ccc headless-start <name> <path> <prompt>\n")
-			os.Exit(1)
-		}
-		if err := headlessStart(os.Args[2], os.Args[3], strings.Join(os.Args[4:], " ")); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}

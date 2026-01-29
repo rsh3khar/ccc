@@ -13,9 +13,97 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
+
+var authInProgress sync.Mutex
+var authWaitingCode bool
+
+// getSystemStats returns machine stats (works on Linux and macOS)
+func getSystemStats() string {
+	var sb strings.Builder
+	hostname, _ := os.Hostname()
+	sb.WriteString(fmt.Sprintf("🖥 %s\n\n", hostname))
+
+	// Uptime
+	if out, err := exec.Command("uptime").Output(); err == nil {
+		sb.WriteString(fmt.Sprintf("⏱ %s\n", strings.TrimSpace(string(out))))
+	}
+
+	// CPU info
+	if out, err := exec.Command("uname", "-m").Output(); err == nil {
+		arch := strings.TrimSpace(string(out))
+		// Count cores: nproc on Linux, sysctl on macOS
+		var cores string
+		if c, err := exec.Command("nproc").Output(); err == nil {
+			cores = strings.TrimSpace(string(c))
+		} else if c, err := exec.Command("sysctl", "-n", "hw.ncpu").Output(); err == nil {
+			cores = strings.TrimSpace(string(c))
+		}
+		sb.WriteString(fmt.Sprintf("🧠 CPU: %s cores (%s)\n", cores, arch))
+	}
+
+	// Memory: Linux uses free, macOS uses vm_stat + sysctl
+	if out, err := exec.Command("free", "-h").Output(); err == nil {
+		// Linux
+		lines := strings.Split(string(out), "\n")
+		for _, l := range lines {
+			if strings.HasPrefix(l, "Mem:") {
+				fields := strings.Fields(l)
+				if len(fields) >= 4 {
+					sb.WriteString(fmt.Sprintf("💾 RAM: %s used / %s total (available: %s)\n", fields[2], fields[1], fields[6]))
+				}
+				break
+			}
+		}
+	} else {
+		// macOS fallback
+		total, _ := exec.Command("sysctl", "-n", "hw.memsize").Output()
+		if len(total) > 0 {
+			totalBytes := strings.TrimSpace(string(total))
+			// Parse and convert to GB
+			if tb, err := strconv.ParseUint(totalBytes, 10, 64); err == nil {
+				totalGB := float64(tb) / (1024 * 1024 * 1024)
+				sb.WriteString(fmt.Sprintf("💾 RAM: %.1f GB total\n", totalGB))
+			}
+		}
+	}
+
+	// Disk usage
+	if out, err := exec.Command("df", "-h", "/").Output(); err == nil {
+		lines := strings.Split(string(out), "\n")
+		if len(lines) >= 2 {
+			fields := strings.Fields(lines[1])
+			if len(fields) >= 5 {
+				sb.WriteString(fmt.Sprintf("💿 Disk /: %s used / %s (%s)\n", fields[2], fields[1], fields[4]))
+			}
+		}
+	}
+	if out, err := exec.Command("df", "-h", "/home").Output(); err == nil {
+		lines := strings.Split(string(out), "\n")
+		if len(lines) >= 2 {
+			fields := strings.Fields(lines[1])
+			if len(fields) >= 5 {
+				// Only show if different from /
+				sb.WriteString(fmt.Sprintf("💿 Disk /home: %s used / %s (%s)\n", fields[2], fields[1], fields[4]))
+			}
+		}
+	}
+
+	// Tmux sessions
+	if out, err := exec.Command("tmux", "list-sessions").Output(); err == nil {
+		sessions := strings.TrimSpace(string(out))
+		if sessions != "" {
+			count := len(strings.Split(sessions, "\n"))
+			sb.WriteString(fmt.Sprintf("\n📟 Tmux sessions: %d\n", count))
+			sb.WriteString(sessions)
+		}
+	}
+
+	return sb.String()
+}
 
 // Execute shell command
 func executeCommand(cmdStr string) (string, error) {
@@ -443,16 +531,14 @@ func doctor() {
 		fmt.Println("   Set transcription_cmd in ~/.ccc.json or install whisper")
 	}
 
-	// Check OAuth token (for headless mode)
+	// Check OAuth token
 	fmt.Print("oauth token....... ")
 	if config != nil && config.OAuthToken != "" {
 		fmt.Println("✅ configured (in config)")
 	} else if os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") != "" {
 		fmt.Println("✅ configured (from environment)")
 	} else {
-		fmt.Println("⚠️  not set (needed for headless mode)")
-		fmt.Println("   Run: ccc config oauth-token <token>")
-		fmt.Println("   Generate with: claude setup-token")
+		fmt.Println("⚠️  not set (optional)")
 	}
 
 	fmt.Println()
@@ -674,6 +760,36 @@ func listen() error {
 				continue
 			}
 
+			// Handle document messages
+			if msg.Document != nil && isGroup && threadID > 0 {
+				config, _ = loadConfig()
+				sessionName := getSessionByTopic(config, threadID)
+				if sessionName != "" {
+					tmuxName := "claude-" + sessionName
+					if tmuxSessionExists(tmuxName) {
+						sessionInfo := config.Sessions[sessionName]
+						destDir := sessionInfo.Path
+						if destDir == "" {
+							destDir = resolveProjectPath(config, sessionName)
+						}
+						destPath := filepath.Join(destDir, msg.Document.FileName)
+						if err := downloadTelegramFile(config, msg.Document.FileID, destPath); err != nil {
+							sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Download failed: %v", err))
+						} else {
+							caption := msg.Caption
+							if caption == "" {
+								caption = fmt.Sprintf("I sent you this file: %s", destPath)
+							} else {
+								caption = fmt.Sprintf("%s\n\nFile: %s", caption, destPath)
+							}
+							sendMessage(config, chatID, threadID, fmt.Sprintf("📎 File saved: %s", destPath))
+							sendToTmux(tmuxName, caption)
+						}
+					}
+				}
+				continue
+			}
+
 			text := strings.TrimSpace(msg.Text)
 			if text == "" {
 				continue
@@ -705,6 +821,23 @@ func listen() error {
 
 			if text == "/update" {
 				updateCCC(config, chatID, threadID)
+				continue
+			}
+
+			if text == "/stats" {
+				stats := getSystemStats()
+				sendMessage(config, chatID, threadID, stats)
+				continue
+			}
+
+			if text == "/auth" {
+				go handleAuth(config, chatID, threadID)
+				continue
+			}
+
+			// If auth is waiting for code, send it
+			if authWaitingCode && !strings.HasPrefix(text, "/") {
+				go handleAuthCode(config, chatID, threadID, text)
 				continue
 			}
 
@@ -864,10 +997,9 @@ COMMANDS:
     doctor                  Check all dependencies and configuration
     config                  Show/set configuration values
     config projects-dir <path>  Set base directory for projects
-    config oauth-token <token>  Set OAuth token for headless mode
+    config oauth-token <token>  Set OAuth token
     setgroup                Configure Telegram group for topics (if skipped during setup)
     listen                  Start the Telegram bot listener manually
-    headless                Start headless listener (no tmux, uses claude -p for VPS)
     install                 Install Claude hook manually
     send <file>             Send file to current session's Telegram topic
     relay [port]            Start relay server for large files (default: 8080)
@@ -887,4 +1019,119 @@ FLAGS:
 
 For more info: https://github.com/kidandcat/ccc
 `, version)
+}
+
+const authTmuxSession = "claude-auth"
+
+func handleAuth(config *Config, chatID, threadID int64) {
+	if !authInProgress.TryLock() {
+		sendMessage(config, chatID, threadID, "⚠️ Auth already in progress")
+		return
+	}
+
+	sendMessage(config, chatID, threadID, "🔐 Starting Claude auth...")
+
+	killTmuxSession(authTmuxSession)
+	time.Sleep(500 * time.Millisecond)
+
+	home, _ := os.UserHomeDir()
+	if err := exec.Command(tmuxPath, "new-session", "-d", "-s", authTmuxSession, "-c", home).Run(); err != nil {
+		sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Failed to create tmux session: %v", err))
+		authInProgress.Unlock()
+		return
+	}
+
+	time.Sleep(500 * time.Millisecond)
+	exec.Command(tmuxPath, "send-keys", "-t", authTmuxSession, claudePath+" --dangerously-skip-permissions", "C-m").Run()
+
+	var oauthURL string
+	for i := 0; i < 30; i++ {
+		time.Sleep(500 * time.Millisecond)
+		out, err := exec.Command(tmuxPath, "capture-pane", "-t", authTmuxSession, "-p", "-S", "-30").Output()
+		if err != nil {
+			continue
+		}
+		pane := string(out)
+
+		if strings.Contains(pane, "Dark mode") || strings.Contains(pane, "❯") || strings.Contains(pane, "Welcome back") {
+			sendMessage(config, chatID, threadID, "✅ Claude is already authenticated!")
+			killTmuxSession(authTmuxSession)
+			authInProgress.Unlock()
+			return
+		}
+
+		if strings.Contains(pane, "claude.ai/oauth/authorize") {
+			lines := strings.Split(pane, "\n")
+			capturing := false
+			for _, line := range lines {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "https://claude.ai/oauth/") {
+					oauthURL = line
+					capturing = true
+				} else if capturing && line != "" && !strings.Contains(line, "Paste code") && !strings.Contains(line, "Browser") {
+					oauthURL += line
+				} else if capturing {
+					capturing = false
+				}
+			}
+			break
+		}
+	}
+
+	if oauthURL == "" {
+		sendMessage(config, chatID, threadID, "❌ Could not find OAuth URL. Try again.")
+		killTmuxSession(authTmuxSession)
+		authInProgress.Unlock()
+		return
+	}
+
+	authWaitingCode = true
+	sendMessage(config, chatID, threadID, fmt.Sprintf("🔗 Open this URL and authorize:\n\n%s\n\nThen paste the code here.", oauthURL))
+}
+
+func handleAuthCode(config *Config, chatID, threadID int64, code string) {
+	authWaitingCode = false
+	code = strings.TrimSpace(code)
+
+	sendMessage(config, chatID, threadID, "🔄 Sending code to Claude...")
+
+	exec.Command(tmuxPath, "send-keys", "-t", authTmuxSession, "-l", code).Run()
+	time.Sleep(200 * time.Millisecond)
+	exec.Command(tmuxPath, "send-keys", "-t", authTmuxSession, "C-m").Run()
+
+	for i := 0; i < 10; i++ {
+		time.Sleep(2 * time.Second)
+		out, _ := exec.Command(tmuxPath, "capture-pane", "-t", authTmuxSession, "-p").Output()
+		pane := string(out)
+
+		if strings.Contains(pane, "Yes, I accept") {
+			exec.Command(tmuxPath, "send-keys", "-t", authTmuxSession, "Down").Run()
+			time.Sleep(200 * time.Millisecond)
+			exec.Command(tmuxPath, "send-keys", "-t", authTmuxSession, "C-m").Run()
+			continue
+		}
+
+		if strings.Contains(pane, "Press Enter") || strings.Contains(pane, "Enter to confirm") {
+			exec.Command(tmuxPath, "send-keys", "-t", authTmuxSession, "C-m").Run()
+			continue
+		}
+
+		if strings.Contains(pane, "❯") {
+			sendMessage(config, chatID, threadID, "✅ Auth successful! Claude is ready.")
+			killTmuxSession(authTmuxSession)
+			authInProgress.Unlock()
+			return
+		}
+	}
+
+	out, _ := exec.Command(tmuxPath, "capture-pane", "-t", authTmuxSession, "-p").Output()
+	pane := string(out)
+	if strings.Contains(pane, "Login successful") || strings.Contains(pane, "❯") {
+		sendMessage(config, chatID, threadID, "✅ Auth successful!")
+	} else {
+		sendMessage(config, chatID, threadID, "⚠️ Auth may have failed. Check VPS manually.")
+	}
+
+	killTmuxSession(authTmuxSession)
+	authInProgress.Unlock()
 }

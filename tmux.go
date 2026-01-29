@@ -101,6 +101,13 @@ func runClaudeRaw(continueSession bool) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
+	// Ensure OAuth token is available from config if not already in environment
+	if os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") == "" {
+		if config, err := loadConfig(); err == nil && config.OAuthToken != "" {
+			cmd.Env = append(os.Environ(), "CLAUDE_CODE_OAUTH_TOKEN="+config.OAuthToken)
+		}
+	}
+
 	return cmd.Run()
 }
 

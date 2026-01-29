@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -68,6 +69,11 @@ func updateCCC(config *Config, chatID, threadID int64) {
 				return
 			}
 		}
+	}
+
+	// Ad-hoc codesign on macOS to avoid Gatekeeper issues
+	if runtime.GOOS == "darwin" {
+		executeCommand(fmt.Sprintf("codesign -s - %s", cccPath))
 	}
 
 	sendMessage(config, chatID, threadID, "✅ Updated. Restarting...")

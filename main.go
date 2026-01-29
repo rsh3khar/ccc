@@ -23,7 +23,6 @@ type Config struct {
 	GroupID          int64                   `json:"group_id,omitempty"`          // Group with topics for sessions
 	Sessions         map[string]*SessionInfo `json:"sessions,omitempty"`          // session name -> session info
 	ProjectsDir      string                  `json:"projects_dir,omitempty"`      // Base directory for new projects (default: ~)
-	TranscriptionCmd  string                  `json:"transcription_cmd,omitempty"`  // Command for audio transcription (receives audio path, outputs text)
 	TranscriptionLang string                  `json:"transcription_lang,omitempty"` // Language code for whisper (e.g. "es", "en")
 	RelayURL         string                  `json:"relay_url,omitempty"`         // Relay server URL for large file transfers
 	Away             bool                    `json:"away"`

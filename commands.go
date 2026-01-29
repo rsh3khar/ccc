@@ -510,25 +510,14 @@ func doctor() {
 		}
 	}
 
-	// Check transcription (optional)
-	fmt.Print("transcription..... ")
-	if config != nil && config.TranscriptionCmd != "" {
-		cmdPath := expandPath(config.TranscriptionCmd)
-		if _, err := os.Stat(cmdPath); err == nil {
-			fmt.Printf("✅ %s\n", cmdPath)
-		} else if _, err := exec.LookPath(config.TranscriptionCmd); err == nil {
-			fmt.Printf("✅ %s (in PATH)\n", config.TranscriptionCmd)
-		} else {
-			fmt.Printf("❌ %s not found\n", config.TranscriptionCmd)
-			fmt.Println("   Check transcription_cmd in ~/.ccc.json")
-		}
-	} else if whisperPath, err := exec.LookPath("whisper"); err == nil {
-		fmt.Printf("✅ %s (fallback)\n", whisperPath)
-	} else if _, err := os.Stat("/opt/homebrew/bin/whisper"); err == nil {
-		fmt.Println("✅ /opt/homebrew/bin/whisper (fallback)")
+	// Check transcription model
+	fmt.Print("whisper model..... ")
+	modelPath := filepath.Join(getModelsDir(), whisperModelName)
+	if _, err := os.Stat(modelPath); err == nil {
+		fmt.Printf("✅ %s\n", modelPath)
 	} else {
-		fmt.Println("⚠️  not configured (optional, for voice messages)")
-		fmt.Println("   Set transcription_cmd in ~/.ccc.json or install whisper")
+		fmt.Println("⚠️  not downloaded (will auto-download on first voice message)")
+		fmt.Println("   Model: " + whisperModelName)
 	}
 
 	// Check OAuth token

@@ -10,6 +10,9 @@ coverage.out
 .vscode/
 *.swp
 
+# Build artifacts
+build/
+
 # OS files
 .DS_Store
 ping-telegram

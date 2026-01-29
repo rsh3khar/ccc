@@ -1,18 +1,50 @@
-.PHONY: build install clean
+.PHONY: build install clean deps
 
-build:
-	go build -o ccc
-	@if [ "$$(uname)" = "Darwin" ]; then \
+PREFIX := $(CURDIR)/build/whisper
+BUILD_DIR := $(CURDIR)/build/cmake
+UNAME := $(shell uname)
+PC_DIR := $(PREFIX)/lib/pkgconfig
+
+# Build whisper.cpp C library
+deps:
+	@if [ ! -f "$(PREFIX)/lib/libwhisper.a" ]; then \
+		echo "Building whisper.cpp..."; \
+		git submodule update --init --recursive; \
+		cmake -S third_party/whisper.cpp -B $(BUILD_DIR) \
+			-DCMAKE_BUILD_TYPE=Release \
+			-DBUILD_SHARED_LIBS=OFF \
+			-DWHISPER_BUILD_TESTS=OFF \
+			-DWHISPER_BUILD_EXAMPLES=OFF \
+			-DWHISPER_BUILD_SERVER=OFF; \
+		cmake --build $(BUILD_DIR) --config Release -j$$(nproc 2>/dev/null || sysctl -n hw.ncpu); \
+		cmake --install $(BUILD_DIR) --prefix $(PREFIX); \
+	else \
+		echo "whisper.cpp already built"; \
+	fi
+	@# Generate pkg-config files matching go-whisper expectations
+	@mkdir -p "$(PC_DIR)"
+	@printf 'prefix=%s\nlibdir=$${prefix}/lib\nincludedir=$${prefix}/include\n\nName: libwhisper\nDescription: whisper.cpp\nVersion: 0.0.0\nCflags: -I$${includedir}\n' "$(PREFIX)" > "$(PC_DIR)/libwhisper.pc"
+	@if [ "$(UNAME)" = "Darwin" ]; then \
+		printf 'prefix=%s\nlibdir=$${prefix}/lib\n\nName: libwhisper-darwin\nDescription: whisper.cpp (darwin)\nVersion: 0.0.0\nLibs: -L$${libdir} -lwhisper -lggml -lggml-base -lggml-cpu -lggml-blas -lggml-metal -lstdc++ -framework Accelerate -framework Metal -framework Foundation -framework CoreGraphics\n' "$(PREFIX)" > "$(PC_DIR)/libwhisper-darwin.pc"; \
+	else \
+		printf 'prefix=%s\nlibdir=$${prefix}/lib\n\nName: libwhisper-linux\nDescription: whisper.cpp (linux)\nVersion: 0.0.0\nLibs: -L$${libdir} -lwhisper -lggml -lggml-base -lggml-cpu -lm -lstdc++ -lpthread\n' "$(PREFIX)" > "$(PC_DIR)/libwhisper-linux.pc"; \
+	fi
+
+build: deps
+	PKG_CONFIG_PATH="$(PC_DIR)" CGO_LDFLAGS_ALLOW="-(W|D).*" \
+		go build -o ccc
+	@if [ "$(UNAME)" = "Darwin" ]; then \
 		codesign -f -s - ccc 2>/dev/null || true; \
 	fi
 
 install: build
 	mkdir -p ~/bin
 	install -m 755 ccc ~/bin/ccc
-	@if [ "$$(uname)" = "Darwin" ]; then \
+	@if [ "$(UNAME)" = "Darwin" ]; then \
 		codesign -f -s - ~/bin/ccc 2>/dev/null || true; \
 	fi
 	@echo "✅ Installed to ~/bin/ccc"
 
 clean:
 	rm -f ccc
+	rm -rf build/

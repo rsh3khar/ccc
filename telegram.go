@@ -43,35 +43,48 @@ func telegramClientGet(client *http.Client, token string, url string) (*http.Res
 	return resp, nil
 }
 
-// updateCCC downloads the latest ccc binary and restarts by exiting (service manager restarts)
+// updateCCC downloads the latest ccc binary from GitHub releases and restarts
 func updateCCC(config *Config, chatID, threadID int64) {
 	sendMessage(config, chatID, threadID, "🔄 Updating ccc...")
 
-	// go install puts binary in ~/go/bin/ccc
-	output, err := executeCommand("go install github.com/kidandcat/ccc@latest")
+	binaryName := fmt.Sprintf("ccc-%s-%s", runtime.GOOS, runtime.GOARCH)
+	downloadURL := fmt.Sprintf("https://github.com/kidandcat/ccc/releases/latest/download/%s", binaryName)
+
+	resp, err := http.Get(downloadURL)
 	if err != nil {
-		sendMessage(config, chatID, threadID, fmt.Sprintf("❌ go install failed:\n%s", output))
+		sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Download failed: %v", err))
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Download failed: HTTP %d (no release for %s?)", resp.StatusCode, binaryName))
 		return
 	}
 
-	// If current binary is not in ~/go/bin, copy the new one over it
-	home, _ := os.UserHomeDir()
-	gobin := filepath.Join(home, "go", "bin", "ccc")
-	if cccPath != gobin {
-		if _, err := os.Stat(gobin); err == nil {
-			data, err := os.ReadFile(gobin)
-			if err != nil {
-				sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Failed to read new binary: %v", err))
-				return
-			}
-			if err := os.WriteFile(cccPath, data, 0755); err != nil {
-				sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Failed to write binary to %s: %v", cccPath, err))
-				return
-			}
-		}
+	tmpPath := cccPath + ".new"
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Failed to create temp file: %v", err))
+		return
 	}
 
-	// Ad-hoc codesign on macOS to avoid Gatekeeper issues
+	_, err = io.Copy(f, resp.Body)
+	f.Close()
+	if err != nil {
+		os.Remove(tmpPath)
+		sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Failed to write binary: %v", err))
+		return
+	}
+
+	os.Chmod(tmpPath, 0755)
+
+	if err := os.Rename(tmpPath, cccPath); err != nil {
+		os.Remove(tmpPath)
+		sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Failed to replace binary: %v", err))
+		return
+	}
+
 	if runtime.GOOS == "darwin" {
 		executeCommand(fmt.Sprintf("codesign -s - %s", cccPath))
 	}

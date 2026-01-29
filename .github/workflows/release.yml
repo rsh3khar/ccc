@@ -79,8 +79,13 @@ jobs:
 
       - name: Build binary
         run: |
+          FFMPEG_LDFLAGS=""
+          if [ -d "$(pwd)/build/ffmpeg/lib" ]; then
+            FFMPEG_LDFLAGS="-L$(pwd)/build/ffmpeg/lib"
+          fi
           PKG_CONFIG_PATH="$(pwd)/build/whisper/lib/pkgconfig:$(pwd)/build/ffmpeg/lib/pkgconfig" \
-          CGO_LDFLAGS_ALLOW="-(W|D).*" \
+          CGO_LDFLAGS_ALLOW="-(W|D|L).*" \
+          CGO_LDFLAGS="$FFMPEG_LDFLAGS" \
           CGO_ENABLED=1 \
             go build -o ${{ matrix.name }}
 

@@ -34,9 +34,31 @@ jobs:
       - name: Install dependencies (Linux)
         if: matrix.goos == 'linux'
         run: |
-          sudo add-apt-repository -y ppa:ubuntuhandbook1/ffmpeg8
           sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev libavdevice-dev libavfilter-dev
+          sudo apt-get install -y cmake pkg-config nasm
+
+      - name: Build ffmpeg static (Linux)
+        if: matrix.goos == 'linux'
+        run: |
+          curl -sL https://ffmpeg.org/releases/ffmpeg-8.0.1.tar.xz | tar xJ
+          cd ffmpeg-8.0.1
+          ./configure \
+            --prefix=$(pwd)/../build/ffmpeg \
+            --enable-static \
+            --disable-shared \
+            --disable-programs \
+            --disable-doc \
+            --disable-network \
+            --disable-everything \
+            --enable-demuxer=ogg,matroska,wav,mp3,flac,aac,mov \
+            --enable-decoder=opus,vorbis,flac,mp3,aac,pcm_s16le,pcm_f32le \
+            --enable-parser=opus,vorbis,flac,mpegaudio,aac \
+            --enable-protocol=file \
+            --enable-filter=aresample \
+            --enable-swresample \
+            --extra-cflags="-fPIC"
+          make -j$(nproc)
+          make install
 
       - name: Install dependencies (macOS)
         if: matrix.goos == 'darwin'
@@ -47,10 +69,16 @@ jobs:
 
       - name: Build binary
         run: |
-          PKG_CONFIG_PATH="$(pwd)/build/whisper/lib/pkgconfig" \
+          PKG_CONFIG_PATH="$(pwd)/build/whisper/lib/pkgconfig:$(pwd)/build/ffmpeg/lib/pkgconfig" \
           CGO_LDFLAGS_ALLOW="-(W|D).*" \
           CGO_ENABLED=1 \
             go build -o ${{ matrix.name }}
+
+      - name: Verify static linking (Linux)
+        if: matrix.goos == 'linux'
+        run: |
+          ldd ${{ matrix.name }} | grep -v "libav\|libsw" || echo "No ffmpeg dynamic deps - good!"
+          ldd ${{ matrix.name }}
 
       - name: Codesign (macOS)
         if: matrix.goos == 'darwin'

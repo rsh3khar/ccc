@@ -43,7 +43,7 @@ jobs:
           curl -sL https://ffmpeg.org/releases/ffmpeg-8.0.1.tar.xz | tar xJ
           cd ffmpeg-8.0.1
           ./configure \
-            --prefix=$(pwd)/../build/ffmpeg \
+            --prefix=${{ github.workspace }}/build/ffmpeg \
             --enable-static \
             --disable-shared \
             --disable-programs \
@@ -66,6 +66,16 @@ jobs:
 
       - name: Build whisper.cpp
         run: make deps
+
+      - name: Debug pkg-config (Linux)
+        if: matrix.goos == 'linux'
+        run: |
+          export PKG_CONFIG_PATH="$(pwd)/build/whisper/lib/pkgconfig:$(pwd)/build/ffmpeg/lib/pkgconfig"
+          echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH"
+          ls -la build/ffmpeg/lib/pkgconfig/ || echo "no pkgconfig dir"
+          ls -la build/ffmpeg/lib/*.a || echo "no .a files"
+          pkg-config --libs --static libavcodec || echo "pkg-config failed"
+          cat build/ffmpeg/lib/pkgconfig/libavcodec.pc || echo "no .pc file"
 
       - name: Build binary
         run: |

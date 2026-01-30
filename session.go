@@ -150,6 +150,53 @@ func startSession(continueSession bool) error {
 	return cmd.Run()
 }
 
+// startDetached creates a Telegram topic, tmux session with Claude, and sends a prompt (no attach)
+func startDetached(name string, workDir string, prompt string) error {
+	config, err := loadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	if config.Sessions == nil {
+		config.Sessions = make(map[string]*SessionInfo)
+	}
+
+	// Create Telegram topic
+	topicID, err := createForumTopic(config, name)
+	if err != nil {
+		return fmt.Errorf("failed to create topic: %w", err)
+	}
+
+	tmuxName := sessionName(name)
+
+	// Kill existing tmux session if any
+	if tmuxSessionExists(tmuxName) {
+		killTmuxSession(tmuxName)
+	}
+
+	// Create tmux session (detached)
+	if err := createTmuxSession(tmuxName, workDir, false); err != nil {
+		return fmt.Errorf("failed to create tmux session: %w", err)
+	}
+
+	// Save session info
+	config.Sessions[name] = &SessionInfo{
+		TopicID: topicID,
+		Path:    workDir,
+	}
+	if err := saveConfig(config); err != nil {
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+
+	// Send the prompt to the tmux session
+	if err := sendToTmux(tmuxName, prompt); err != nil {
+		return fmt.Errorf("failed to send prompt: %w", err)
+	}
+
+	fmt.Printf("Session '%s' started in tmux '%s' with topic %d\n", name, tmuxName, topicID)
+	return nil
+}
+
 const whisperModelName = "ggml-small.bin"
 const whisperModelURL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin"
 

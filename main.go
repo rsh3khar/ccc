@@ -357,6 +357,18 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "start":
+		// start <name> <work-dir> <prompt>
+		// Creates a Telegram topic, tmux session with Claude, and sends the prompt (detached)
+		if len(os.Args) < 5 {
+			fmt.Fprintf(os.Stderr, "Usage: ccc start <session-name> <work-dir> <prompt>\n")
+			os.Exit(1)
+		}
+		if err := startDetached(os.Args[2], os.Args[3], os.Args[4]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
 	case "relay":
 		port := "8080"
 		if len(os.Args) >= 3 {

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/mutablelogic/go-whisper/pkg/schema"
 	whisper "github.com/mutablelogic/go-whisper/pkg/whisper"
@@ -186,6 +187,11 @@ func startDetached(name string, workDir string, prompt string) error {
 	}
 	if err := saveConfig(config); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
+	}
+
+	// Wait for Claude to be ready before sending prompt
+	if err := waitForClaude(tmuxName, 30*time.Second); err != nil {
+		return fmt.Errorf("claude did not start in time: %w", err)
 	}
 
 	// Send the prompt to the tmux session

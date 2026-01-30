@@ -30,12 +30,12 @@ func initPaths() {
 		}
 	}
 
-	// Find ccc binary - prefer ~/go/bin/ccc (canonical install path),
+	// Find ccc binary - prefer ~/bin/ccc (canonical install path),
 	// then PATH, then current executable as last resort
 	home, _ := os.UserHomeDir()
-	goBinCcc := home + "/go/bin/ccc"
-	if _, err := os.Stat(goBinCcc); err == nil {
-		cccPath = goBinCcc
+	binCcc := home + "/bin/ccc"
+	if _, err := os.Stat(binCcc); err == nil {
+		cccPath = binCcc
 	} else if path, err := exec.LookPath("ccc"); err == nil {
 		cccPath = path
 	} else if exe, err := os.Executable(); err == nil {

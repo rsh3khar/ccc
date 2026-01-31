@@ -144,7 +144,8 @@ func handlePermissionHook() error {
 					}
 					// Callback data format: session:questionIndex:optionIndex
 					// Telegram limits callback_data to 64 bytes
-					callbackData := fmt.Sprintf("%s:%d:%d", sessionName, qIdx, i)
+					totalQuestions := len(hookData.ToolInput.Questions)
+					callbackData := fmt.Sprintf("%s:%d:%d:%d", sessionName, qIdx, totalQuestions, i)
 					if len(callbackData) > 64 {
 						callbackData = callbackData[:64]
 					}
@@ -390,7 +391,8 @@ func handleQuestionHook() error {
 			if opt.Label == "" {
 				continue
 			}
-			callbackData := fmt.Sprintf("%s:%d:%d", sessionName, qIdx, i)
+			totalQuestions := len(hookData.ToolInput.Questions)
+			callbackData := fmt.Sprintf("%s:%d:%d:%d", sessionName, qIdx, totalQuestions, i)
 			if len(callbackData) > 64 {
 				callbackData = callbackData[:64]
 			}

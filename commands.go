@@ -655,12 +655,19 @@ func listen() error {
 
 				answerCallbackQuery(config, cb.ID)
 
-				// Parse callback data: session:questionIndex:optionIndex
+				// Parse callback data: session:questionIndex:totalQuestions:optionIndex
 				parts := strings.Split(cb.Data, ":")
-				if len(parts) == 3 {
+				if len(parts) >= 3 {
 					sessionName := parts[0]
-					// questionIndex := parts[1] // for multi-question support
-					optionIndex, _ := strconv.Atoi(parts[2])
+					questionIndex, _ := strconv.Atoi(parts[1])
+					var totalQuestions, optionIndex int
+					if len(parts) == 4 {
+						totalQuestions, _ = strconv.Atoi(parts[2])
+						optionIndex, _ = strconv.Atoi(parts[3])
+					} else {
+						// Legacy format: session:questionIndex:optionIndex
+						optionIndex, _ = strconv.Atoi(parts[2])
+					}
 
 					// Edit message to show selection and remove buttons
 					if cb.Message != nil {
@@ -677,9 +684,17 @@ func listen() error {
 							time.Sleep(50 * time.Millisecond)
 						}
 						exec.Command(tmuxPath, "send-keys", "-t", tmuxName, "Enter").Run()
-						fmt.Printf("[callback] Selected option %d for %s\n", optionIndex, sessionName)
+						fmt.Printf("[callback] Selected option %d for %s (question %d/%d)\n", optionIndex, sessionName, questionIndex+1, totalQuestions)
+
+						// After the last question, send Enter to confirm "Submit answers"
+						if totalQuestions > 0 && questionIndex == totalQuestions-1 {
+							time.Sleep(300 * time.Millisecond)
+							exec.Command(tmuxPath, "send-keys", "-t", tmuxName, "Enter").Run()
+							fmt.Printf("[callback] Auto-submitted answers for %s\n", sessionName)
+						}
 					}
 				}
+
 				continue
 			}
 

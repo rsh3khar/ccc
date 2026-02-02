@@ -86,7 +86,7 @@ This builds, signs (on macOS), and installs to `~/bin/`.
 
 ```bash
 ccc --version
-# ccc version 1.0.0
+# ccc version 1.2.0
 ```
 
 > **macOS troubleshooting**: If you get `killed` when running ccc, the binary needs to be signed:
@@ -135,6 +135,7 @@ That's it! You're ready to control Claude Code from Telegram.
 | `ccc -c` | Continue previous session |
 | `ccc "message"` | Send notification (if away mode on) |
 | `ccc send <file>` | Send a file to Telegram (see [File Transfer](#file-transfer)) |
+| `ccc start <name> <dir> <prompt>` | Start a detached session with an initial prompt |
 | `ccc doctor` | Check all dependencies and configuration |
 | `ccc config` | Show current configuration |
 | `ccc config projects-dir <path>` | Set base directory for new projects |
@@ -150,14 +151,10 @@ That's it! You're ready to control Claude Code from Telegram.
 | `/new <name>` | Create new session + topic (in projects directory) |
 | `/new ~/path/name` | Create session in custom location |
 | `/new` | Restart session in current topic (kills if running) |
-| `/continue <name>` | Create new session with conversation history |
-| `/continue` | Restart with `-c` flag (continues conversation) |
-| `/kill <name>` | Kill a session |
-| `/list` | List active sessions |
-| `/setdir <path>` | Set base directory for new projects |
-| `/ping` | Check if bot is alive |
-| `/away` | Toggle away mode (notifications) |
 | `/c <cmd>` | Run shell command on your machine |
+| `/update` | Update ccc binary from latest GitHub release |
+| `/stats` | Show system stats (uptime, CPU, memory, disk) |
+| `/auth` | Re-authenticate Claude Code (OAuth flow) |
 
 **In private chat:**
 - Send any message to run a one-shot Claude query
@@ -359,11 +356,7 @@ Config is stored in `~/.ccc.json`:
 By default, `/new myproject` creates `~/myproject`. To organize projects in a dedicated folder:
 
 ```bash
-# Via CLI
 ccc config projects-dir ~/Projects
-
-# Via Telegram
-/setdir ~/Projects
 ```
 
 Now `/new myproject` creates `~/Projects/myproject`.
@@ -425,39 +418,14 @@ When you create a session with `/new myproject`:
 
 **Using existing folders:** If the folder already exists, ccc uses it as-is without modifying contents. This lets you create sessions for existing projects.
 
-### Deleting and Recovering Sessions
+### Restarting Sessions
 
-The `/kill` command performs a **soft delete**:
+Use `/new` (without arguments) in an existing topic to restart the session. The project folder is always preserved.
 
-| What | Deleted? |
-|------|----------|
-| tmux session | Yes |
-| Config entry | Yes |
-| Project folder | **No** (preserved) |
-| Telegram topic | **No** (preserved) |
-
-**Scenarios:**
+To start fresh with an existing project, use `/new` in the topic or create a new session pointing to the same path:
 
 ```
-# Scenario 1: Temporarily stop a session
-/kill myproject
-# Later: /new myproject → new topic, same folder
-
-# Scenario 2: Clean up topic manually
-/kill myproject
-# In Telegram: Archive or delete the topic via UI
-# Folder with code remains on disk
-
-# Scenario 3: Fresh start with existing code
-/kill myproject
-# Delete topic in Telegram UI
-/new myproject
-# → New topic, new chat history, existing code preserved
-
-# Scenario 4: Reuse folder with different session name
-/kill oldname
-/new ~/Projects/oldname  # explicit path
-# → Creates session with name "oldname" pointing to same folder
+/new ~/Projects/myproject
 ```
 
 > **Tip**: Telegram topics can be archived (hidden) or deleted via UI. Deleting a topic removes all message history permanently.
@@ -524,8 +492,7 @@ This checks tmux, claude, config, hooks, and service status.
 
 **Messages not reaching Claude?**
 - Verify you're in the correct topic
-- Check if session exists: `/list`
-- Try restarting: `/new`
+- Try restarting: `/new` in the topic
 
 **Session dies immediately?**
 - Check `ccc doctor` output

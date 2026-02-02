@@ -135,6 +135,15 @@ func extractBlocks(lines []string, start, end int) []string {
 		line := lines[i]
 		trimmed := strings.TrimSpace(line)
 
+		// Skip input box lines, status line, and empty ❯ prompts
+		if strings.HasPrefix(trimmed, "───") || strings.HasPrefix(trimmed, "⏵⏵") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "❯") {
+			// ❯ inside output area = input box prompt, skip it
+			continue
+		}
+
 		if isBulletLine(trimmed) {
 			if inBlock && currentBlock.Len() > 0 {
 				blocks = append(blocks, strings.TrimSpace(currentBlock.String()))

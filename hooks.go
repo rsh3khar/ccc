@@ -6,16 +6,27 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 )
 
+func hookLog(format string, args ...interface{}) {
+	f, err := os.OpenFile("/tmp/ccc-hook-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "[%s] %s\n", time.Now().Format("15:04:05"), fmt.Sprintf(format, args...))
+}
+
 func handleHook() error {
+	hookLog("=== Stop hook called ===")
 	config, err := loadConfig()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "hook: no config\n")
+		hookLog("hook: no config")
 		return nil
 	}
 
@@ -23,11 +34,11 @@ func handleHook() error {
 	var hookData HookData
 	decoder := json.NewDecoder(os.Stdin)
 	if err := decoder.Decode(&hookData); err != nil {
-		fmt.Fprintf(os.Stderr, "hook: decode error: %v\n", err)
+		hookLog("hook: decode error: %v", err)
 		return nil
 	}
 
-	fmt.Fprintf(os.Stderr, "hook: cwd=%s transcript=%s\n", hookData.Cwd, hookData.TranscriptPath)
+	hookLog("hook: cwd=%s transcript=%s", hookData.Cwd, hookData.TranscriptPath)
 
 	// Find session by matching cwd with saved path
 	var sessionName string
@@ -44,47 +55,36 @@ func handleHook() error {
 		}
 	}
 	if sessionName == "" || config.GroupID == 0 {
-		fmt.Fprintf(os.Stderr, "hook: no session found for cwd=%s\n", hookData.Cwd)
+		hookLog("hook: no session found for cwd=%s", hookData.Cwd)
 		return nil
 	}
 
-	fmt.Fprintf(os.Stderr, "hook: session=%s topic=%d\n", sessionName, topicID)
+	hookLog("hook: session=%s topic=%d", sessionName, topicID)
 
-	// Wait briefly for transcript to be fully written
-	time.Sleep(500 * time.Millisecond)
-
-	// Read last message from transcript
-	lastMessage := "Session ended"
-	if hookData.TranscriptPath != "" {
-		fmt.Fprintf(os.Stderr, "hook-stop: reading transcript %s\n", hookData.TranscriptPath)
-		if msg := getLastAssistantMessage(hookData.TranscriptPath); msg != "" {
-			lastMessage = msg
-			fmt.Fprintf(os.Stderr, "hook-stop: last message (first 100 chars): %s\n", truncate(lastMessage, 100))
-		} else {
-			fmt.Fprintf(os.Stderr, "hook-stop: no assistant message found in transcript\n")
-		}
-	} else {
-		fmt.Fprintf(os.Stderr, "hook-stop: no transcript path provided\n")
-	}
-
-	// Check if this message was already sent by PostToolUse
+	// Clear the output hook cache
 	cacheFile := filepath.Join(os.TempDir(), "ccc-cache-"+sessionName)
 	msgIDFile := filepath.Join(os.TempDir(), "ccc-msgid-"+sessionName)
-	lastSent, _ := os.ReadFile(cacheFile)
-	if strings.TrimSpace(string(lastSent)) == strings.TrimSpace(lastMessage) {
-		fmt.Fprintf(os.Stderr, "hook-stop: message already sent by PostToolUse, skipping\n")
-		os.Remove(cacheFile)
-		os.Remove(msgIDFile)
-		return nil
-	}
-
-	// Clear the cache
 	os.Remove(cacheFile)
 	os.Remove(msgIDFile)
 
-	fmt.Fprintf(os.Stderr, "hook-stop: sending final message\n")
-	// Always send the Stop message (final result)
-	return sendMessage(config, config.GroupID, topicID, fmt.Sprintf("✅ %s\n\n%s", sessionName, lastMessage))
+	// Parse tmux terminal to get the last response blocks
+	tmuxName := "claude-" + sessionName
+	blocks := getLastBlocksFromTmux(tmuxName)
+	if len(blocks) == 0 {
+		hookLog("hook-stop: no blocks found, sending generic message")
+		return sendMessage(config, config.GroupID, topicID, fmt.Sprintf("✅ %s", sessionName))
+	}
+
+	// Send each block as a separate message
+	for i, block := range blocks {
+		prefix := ""
+		if i == len(blocks)-1 {
+			prefix = "✅ " + sessionName + "\n\n"
+		}
+		sendMessage(config, config.GroupID, topicID, prefix+block)
+		hookLog("hook-stop: sent block %d/%d: %s", i+1, len(blocks), truncate(block, 80))
+	}
+	return nil
 }
 
 func handlePermissionHook() error {
@@ -200,6 +200,84 @@ func truncate(s string, n int) string {
 	return s[:n] + "..."
 }
 
+// getLastBlocksFromTmux captures the tmux pane and extracts assistant blocks
+// after the last user prompt (❯). Each block starts with ● and ends at the
+// next ● or the input box (────).
+func getLastBlocksFromTmux(tmuxSession string) []string {
+	cmd := exec.Command(tmuxPath, "capture-pane", "-t", tmuxSession, "-p", "-S", "-200")
+	output, err := cmd.Output()
+	if err != nil {
+		hookLog("getLastBlocks: tmux capture failed: %v", err)
+		return nil
+	}
+
+	lines := strings.Split(string(output), "\n")
+
+	// Find the last user prompt (❯) before the input box
+	lastPromptIdx := -1
+	inputBoxIdx := len(lines)
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(trimmed, "────") {
+			inputBoxIdx = i
+			continue
+		}
+		if strings.HasPrefix(trimmed, "❯") && i < inputBoxIdx {
+			// Skip empty prompts (just "❯" or "❯ ")
+			content := strings.TrimSpace(strings.TrimPrefix(trimmed, "❯"))
+			if content == "" && lastPromptIdx == -1 {
+				// This is the empty prompt at the end, keep looking
+				continue
+			}
+			lastPromptIdx = i
+			break
+		}
+	}
+
+	if lastPromptIdx == -1 {
+		hookLog("getLastBlocks: no user prompt found")
+		return nil
+	}
+
+	// Extract blocks between lastPromptIdx and inputBoxIdx
+	var blocks []string
+	var currentBlock strings.Builder
+	inBlock := false
+
+	for i := lastPromptIdx + 1; i < inputBoxIdx; i++ {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+
+		if strings.HasPrefix(line, "● ") || strings.HasPrefix(line, "✻ ") {
+			// Save previous block
+			if inBlock && currentBlock.Len() > 0 {
+				blocks = append(blocks, strings.TrimSpace(currentBlock.String()))
+			}
+			currentBlock.Reset()
+			// Remove the bullet prefix
+			blockText := strings.TrimPrefix(line, "● ")
+			blockText = strings.TrimPrefix(blockText, "✻ ")
+			currentBlock.WriteString(blockText)
+			inBlock = true
+		} else if inBlock {
+			if trimmed == "" {
+				currentBlock.WriteString("\n")
+			} else {
+				currentBlock.WriteString("\n")
+				currentBlock.WriteString(trimmed)
+			}
+		}
+	}
+
+	// Don't forget the last block
+	if inBlock && currentBlock.Len() > 0 {
+		blocks = append(blocks, strings.TrimSpace(currentBlock.String()))
+	}
+
+	hookLog("getLastBlocks: found %d blocks after prompt at line %d", len(blocks), lastPromptIdx)
+	return blocks
+}
+
 func getLastAssistantMessage(transcriptPath string) string {
 	file, err := os.Open(transcriptPath)
 	if err != nil {
@@ -209,9 +287,8 @@ func getLastAssistantMessage(transcriptPath string) string {
 
 	var lastMessage string
 	scanner := bufio.NewScanner(file)
-	// Increase buffer size for large lines
 	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 10*1024*1024) // 10MB to handle large tool outputs
+	scanner.Buffer(buf, 10*1024*1024)
 
 	for scanner.Scan() {
 		var entry map[string]interface{}

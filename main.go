@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-const version = "1.2.0"
+const version = "1.3.0"
 
 // SessionInfo stores information about a session
 type SessionInfo struct {

@@ -605,6 +605,9 @@ func listen() error {
 
 	setBotCommands(config.BotToken)
 
+	// Start session monitor (polls tmux sessions and syncs output to Telegram)
+	go startSessionMonitor(config)
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
@@ -729,6 +732,7 @@ func listen() error {
 							} else if transcription != "" {
 								fmt.Printf("[voice] @%s: %s\n", msg.From.Username, transcription)
 								sendMessage(config, chatID, threadID, fmt.Sprintf("📝 %s", transcription))
+								ResetSessionMonitor(sessionName)
 								sendToTmux(tmuxName, "[Audio transcription, may contain errors]: "+transcription)
 							}
 						}
@@ -756,7 +760,7 @@ func listen() error {
 							}
 							prompt := fmt.Sprintf("%s %s", caption, imgPath)
 							sendMessage(config, chatID, threadID, fmt.Sprintf("📷 Image saved, sending to Claude..."))
-							// Send text first, wait for image to load, then send Enter
+							ResetSessionMonitor(sessionName)
 							sendToTmuxWithDelay(tmuxName, prompt, 2*time.Second)
 						}
 					}
@@ -787,6 +791,7 @@ func listen() error {
 								caption = fmt.Sprintf("%s\n\nFile: %s", caption, destPath)
 							}
 							sendMessage(config, chatID, threadID, fmt.Sprintf("📎 File saved: %s", destPath))
+							ResetSessionMonitor(sessionName)
 							sendToTmux(tmuxName, caption)
 						}
 					}
@@ -968,6 +973,7 @@ func listen() error {
 						sendMessage(config, chatID, threadID, fmt.Sprintf("🚀 Session '%s' auto-started", sessName))
 						time.Sleep(3 * time.Second) // Wait for Claude to fully start
 					}
+					ResetSessionMonitor(sessName)
 					if err := sendToTmux(tmuxName, text); err != nil {
 						sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Failed to send: %v", err))
 					}

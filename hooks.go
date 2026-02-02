@@ -1,89 +1,18 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 )
 
-func hookLog(format string, args ...interface{}) {
-	f, err := os.OpenFile("/tmp/ccc-hook-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	fmt.Fprintf(f, "[%s] %s\n", time.Now().Format("15:04:05"), fmt.Sprintf(format, args...))
-}
-
 func handleHook() error {
-	hookLog("=== Stop hook called ===")
-	config, err := loadConfig()
-	if err != nil {
-		hookLog("hook: no config")
-		return nil
-	}
-
-	// Read hook data from stdin
-	var hookData HookData
-	decoder := json.NewDecoder(os.Stdin)
-	if err := decoder.Decode(&hookData); err != nil {
-		hookLog("hook: decode error: %v", err)
-		return nil
-	}
-
-	hookLog("hook: cwd=%s transcript=%s", hookData.Cwd, hookData.TranscriptPath)
-
-	// Find session by matching cwd with saved path
-	var sessionName string
-	var topicID int64
-	for name, info := range config.Sessions {
-		if info == nil {
-			continue
-		}
-		// Match against saved path, subdirectories of saved path, or suffix
-		if hookData.Cwd == info.Path || strings.HasPrefix(hookData.Cwd, info.Path+"/") || strings.HasSuffix(hookData.Cwd, "/"+name) {
-			sessionName = name
-			topicID = info.TopicID
-			break
-		}
-	}
-	if sessionName == "" || config.GroupID == 0 {
-		hookLog("hook: no session found for cwd=%s", hookData.Cwd)
-		return nil
-	}
-
-	hookLog("hook: session=%s topic=%d", sessionName, topicID)
-
-	// Clear the output hook cache
-	cacheFile := filepath.Join(os.TempDir(), "ccc-cache-"+sessionName)
-	msgIDFile := filepath.Join(os.TempDir(), "ccc-msgid-"+sessionName)
-	os.Remove(cacheFile)
-	os.Remove(msgIDFile)
-
-	// Parse tmux terminal to get the last response blocks
-	tmuxName := "claude-" + sessionName
-	blocks := getLastBlocksFromTmux(tmuxName)
-	if len(blocks) == 0 {
-		hookLog("hook-stop: no blocks found, sending generic message")
-		return sendMessage(config, config.GroupID, topicID, fmt.Sprintf("✅ %s", sessionName))
-	}
-
-	// Send each block as a separate message
-	for i, block := range blocks {
-		prefix := ""
-		if i == len(blocks)-1 {
-			prefix = "✅ " + sessionName + "\n\n"
-		}
-		sendMessage(config, config.GroupID, topicID, prefix+block)
-		hookLog("hook-stop: sent block %d/%d: %s", i+1, len(blocks), truncate(block, 80))
-	}
+	// Legacy Stop hook - now handled by monitor polling
+	// Keep as no-op for backwards compatibility
 	return nil
 }
 
@@ -105,33 +34,30 @@ func handlePermissionHook() error {
 	select {
 	case rawData = <-stdinData:
 	case <-time.After(2 * time.Second):
-		return nil // Timeout, exit silently
+		return nil
 	}
 
 	if len(rawData) == 0 {
 		return nil
 	}
 
-	// Parse JSON - ignore errors
 	var hookData HookData
 	if err := json.Unmarshal(rawData, &hookData); err != nil {
 		return nil
 	}
 
-	// Load config - ignore errors
 	config, err := loadConfig()
 	if err != nil || config == nil {
 		return nil
 	}
 
-	// Find session by matching cwd with saved path
+	// Find session
 	var sessionName string
 	var topicID int64
 	for name, info := range config.Sessions {
 		if name == "" || info == nil {
 			continue
 		}
-		// Match against saved path, subdirectories of saved path, or suffix
 		if hookData.Cwd == info.Path || strings.HasPrefix(hookData.Cwd, info.Path+"/") || strings.HasSuffix(hookData.Cwd, "/"+name) {
 			sessionName = name
 			topicID = info.TopicID
@@ -143,8 +69,7 @@ func handlePermissionHook() error {
 		return nil
 	}
 
-	// Handle AskUserQuestion (plan approval, etc.) - in goroutine to not block
-	fmt.Fprintf(os.Stderr, "hook-permission: tool=%s questions=%d\n", hookData.ToolName, len(hookData.ToolInput.Questions))
+	// Handle AskUserQuestion
 	if hookData.ToolName == "AskUserQuestion" && len(hookData.ToolInput.Questions) > 0 {
 		go func() {
 			defer func() { recover() }()
@@ -152,17 +77,13 @@ func handlePermissionHook() error {
 				if q.Question == "" {
 					continue
 				}
-				// Build message
 				msg := fmt.Sprintf("❓ %s\n\n%s", q.Header, q.Question)
 
-				// Build inline keyboard buttons
 				var buttons [][]InlineKeyboardButton
 				for i, opt := range q.Options {
 					if opt.Label == "" {
 						continue
 					}
-					// Callback data format: session:questionIndex:optionIndex
-					// Telegram limits callback_data to 64 bytes
 					totalQuestions := len(hookData.ToolInput.Questions)
 					callbackData := fmt.Sprintf("%s:%d:%d:%d", sessionName, qIdx, totalQuestions, i)
 					if len(callbackData) > 64 {
@@ -181,269 +102,16 @@ func handlePermissionHook() error {
 		return nil
 	}
 
-	// Generic permission request - in goroutine to not block
-	go func() {
-		defer func() { recover() }()
-		if hookData.ToolName != "" {
-			msg := fmt.Sprintf("🔐 Permission requested: %s", hookData.ToolName)
-			sendMessage(config, config.GroupID, topicID, msg)
-		}
-	}()
-
 	return nil
 }
 
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
-}
-
-// getLastBlocksFromTmux captures the tmux pane and extracts assistant blocks
-// after the last user prompt (❯). Each block starts with ● and ends at the
-// next ● or the input box (────).
-func getLastBlocksFromTmux(tmuxSession string) []string {
-	cmd := exec.Command(tmuxPath, "capture-pane", "-t", tmuxSession, "-p", "-S", "-200")
-	output, err := cmd.Output()
-	if err != nil {
-		hookLog("getLastBlocks: tmux capture failed: %v", err)
-		return nil
-	}
-
-	lines := strings.Split(string(output), "\n")
-
-	// Find the last user prompt (❯) before the input box
-	lastPromptIdx := -1
-	inputBoxIdx := len(lines)
-	for i := len(lines) - 1; i >= 0; i-- {
-		trimmed := strings.TrimSpace(lines[i])
-		if strings.HasPrefix(trimmed, "────") {
-			inputBoxIdx = i
-			continue
-		}
-		if strings.HasPrefix(trimmed, "❯") && i < inputBoxIdx {
-			// Skip empty prompts (just "❯" or "❯ ")
-			content := strings.TrimSpace(strings.TrimPrefix(trimmed, "❯"))
-			if content == "" && lastPromptIdx == -1 {
-				// This is the empty prompt at the end, keep looking
-				continue
-			}
-			lastPromptIdx = i
-			break
-		}
-	}
-
-	if lastPromptIdx == -1 {
-		hookLog("getLastBlocks: no user prompt found")
-		return nil
-	}
-
-	// Extract blocks between lastPromptIdx and inputBoxIdx
-	var blocks []string
-	var currentBlock strings.Builder
-	inBlock := false
-
-	for i := lastPromptIdx + 1; i < inputBoxIdx; i++ {
-		line := lines[i]
-		trimmed := strings.TrimSpace(line)
-
-		if strings.HasPrefix(line, "● ") || strings.HasPrefix(line, "✻ ") {
-			// Save previous block
-			if inBlock && currentBlock.Len() > 0 {
-				blocks = append(blocks, strings.TrimSpace(currentBlock.String()))
-			}
-			currentBlock.Reset()
-			// Remove the bullet prefix
-			blockText := strings.TrimPrefix(line, "● ")
-			blockText = strings.TrimPrefix(blockText, "✻ ")
-			currentBlock.WriteString(blockText)
-			inBlock = true
-		} else if inBlock {
-			if trimmed == "" {
-				currentBlock.WriteString("\n")
-			} else {
-				currentBlock.WriteString("\n")
-				currentBlock.WriteString(trimmed)
-			}
-		}
-	}
-
-	// Don't forget the last block
-	if inBlock && currentBlock.Len() > 0 {
-		blocks = append(blocks, strings.TrimSpace(currentBlock.String()))
-	}
-
-	hookLog("getLastBlocks: found %d blocks after prompt at line %d", len(blocks), lastPromptIdx)
-	return blocks
-}
-
-func getLastAssistantMessage(transcriptPath string) string {
-	file, err := os.Open(transcriptPath)
-	if err != nil {
-		return ""
-	}
-	defer file.Close()
-
-	var lastMessage string
-	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 10*1024*1024)
-
-	for scanner.Scan() {
-		var entry map[string]interface{}
-		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
-			continue
-		}
-		if entry["type"] == "assistant" {
-			if msg, ok := entry["message"].(map[string]interface{}); ok {
-				if content, ok := msg["content"].([]interface{}); ok {
-					for _, c := range content {
-						if block, ok := c.(map[string]interface{}); ok {
-							if block["type"] == "text" {
-								if text, ok := block["text"].(string); ok {
-									lastMessage = text
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-	return lastMessage
-}
-
 func handlePromptHook() error {
-	config, err := loadConfig()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "hook-prompt: no config\n")
-		return nil
-	}
-
-	var hookData HookData
-	decoder := json.NewDecoder(os.Stdin)
-	if err := decoder.Decode(&hookData); err != nil {
-		fmt.Fprintf(os.Stderr, "hook-prompt: decode error: %v\n", err)
-		return nil
-	}
-
-	if hookData.Prompt == "" {
-		fmt.Fprintf(os.Stderr, "hook-prompt: empty prompt\n")
-		return nil
-	}
-
-	// Find session by matching cwd with saved path
-	var sessionName string
-	var topicID int64
-	for name, info := range config.Sessions {
-		if info == nil {
-			continue
-		}
-		// Match against saved path, subdirectories of saved path, or suffix
-		if hookData.Cwd == info.Path || strings.HasPrefix(hookData.Cwd, info.Path+"/") || strings.HasSuffix(hookData.Cwd, "/"+name) {
-			sessionName = name
-			topicID = info.TopicID
-			break
-		}
-	}
-
-	if topicID == 0 || config.GroupID == 0 {
-		fmt.Fprintf(os.Stderr, "hook-prompt: no topic found for cwd=%s\n", hookData.Cwd)
-		return nil
-	}
-
-	// Cache the current last assistant message to prevent re-sending old messages
-	if sessionName != "" && hookData.TranscriptPath != "" {
-		if msg := getLastAssistantMessage(hookData.TranscriptPath); msg != "" {
-			cacheFile := filepath.Join(os.TempDir(), "ccc-cache-"+sessionName)
-			os.WriteFile(cacheFile, []byte(msg), 0600)
-		}
-	}
-
-	// Send typing action
-	sendTypingAction(config, config.GroupID, topicID)
-
-	// Send the prompt to Telegram (sendMessage handles splitting long messages)
-	fmt.Fprintf(os.Stderr, "hook-prompt: sending to topic %d\n", topicID)
-	return sendMessage(config, config.GroupID, topicID, fmt.Sprintf("💬 %s", hookData.Prompt))
+	// Legacy - now handled by monitor polling
+	return nil
 }
 
 func handleOutputHook() error {
-	config, err := loadConfig()
-	if err != nil {
-		return nil
-	}
-
-	rawData, _ := io.ReadAll(os.Stdin)
-	if len(rawData) == 0 {
-		return nil
-	}
-
-	var hookData HookData
-	if err := json.Unmarshal(rawData, &hookData); err != nil {
-		return nil
-	}
-
-	// Find session by matching cwd with saved path
-	var sessionName string
-	var topicID int64
-	for name, info := range config.Sessions {
-		if info == nil {
-			continue
-		}
-		// Match against saved path, subdirectories of saved path, or suffix
-		if hookData.Cwd == info.Path || strings.HasPrefix(hookData.Cwd, info.Path+"/") || strings.HasSuffix(hookData.Cwd, "/"+name) {
-			sessionName = name
-			topicID = info.TopicID
-			break
-		}
-	}
-
-	if topicID == 0 || config.GroupID == 0 || sessionName == "" {
-		return nil
-	}
-
-	// Get last message from transcript
-	if hookData.TranscriptPath != "" {
-		if msg := getLastAssistantMessage(hookData.TranscriptPath); msg != "" {
-			cacheFile := filepath.Join(os.TempDir(), "ccc-cache-"+sessionName)
-			msgIDFile := filepath.Join(os.TempDir(), "ccc-msgid-"+sessionName)
-			lastSent, _ := os.ReadFile(cacheFile)
-
-			// PostToolUse: try to edit existing message
-			if hookData.HookEventName == "PostToolUse" {
-				if msgIDData, err := os.ReadFile(msgIDFile); err == nil {
-					if msgID, err := strconv.ParseInt(string(msgIDData), 10, 64); err == nil && msgID > 0 {
-						// Only edit if message changed (normalize for comparison)
-						if strings.TrimSpace(string(lastSent)) != strings.TrimSpace(msg) {
-							os.WriteFile(cacheFile, []byte(msg), 0600)
-							editMessage(config, config.GroupID, msgID, topicID, msg)
-						}
-						return nil
-					}
-				}
-			}
-
-			// PreToolUse or no existing message: check for duplicates, then send new
-			// Normalize for comparison (trim whitespace)
-			if strings.TrimSpace(string(lastSent)) == strings.TrimSpace(msg) {
-				return nil // Skip duplicate
-			}
-			os.WriteFile(cacheFile, []byte(msg), 0600)
-
-			// Add tool name prefix for PreToolUse
-			finalMsg := msg
-			if hookData.HookEventName == "PreToolUse" && hookData.ToolName != "" {
-				finalMsg = fmt.Sprintf("🔧 %s\n\n%s", hookData.ToolName, msg)
-			}
-
-			if msgID, err := sendMessageGetID(config, config.GroupID, topicID, finalMsg); err == nil && msgID > 0 {
-				os.WriteFile(msgIDFile, []byte(strconv.FormatInt(msgID, 10)), 0600)
-			}
-		}
-	}
-
+	// Legacy - now handled by monitor polling
 	return nil
 }
 
@@ -463,14 +131,12 @@ func handleQuestionHook() error {
 		return nil
 	}
 
-	// Find session by matching cwd with saved path
 	var sessionName string
 	var topicID int64
 	for name, info := range config.Sessions {
 		if info == nil {
 			continue
 		}
-		// Match against saved path, subdirectories of saved path, or suffix
 		if hookData.Cwd == info.Path || strings.HasPrefix(hookData.Cwd, info.Path+"/") || strings.HasSuffix(hookData.Cwd, "/"+name) {
 			sessionName = name
 			topicID = info.TopicID
@@ -482,7 +148,6 @@ func handleQuestionHook() error {
 		return nil
 	}
 
-	// Send questions to Telegram
 	for qIdx, q := range hookData.ToolInput.Questions {
 		if q.Question == "" {
 			continue
@@ -515,53 +180,16 @@ func handleQuestionHook() error {
 }
 
 func handleNotificationHook() error {
-	config, err := loadConfig()
-	if err != nil {
-		return nil
-	}
-
-	rawData, _ := io.ReadAll(os.Stdin)
-	if len(rawData) == 0 {
-		return nil
-	}
-
-	var hookData HookData
-	if err := json.Unmarshal(rawData, &hookData); err != nil {
-		return nil
-	}
-
-	if hookData.Notification == "" {
-		return nil
-	}
-
-	// Find session by matching cwd with saved path
-	var topicID int64
-	for name, info := range config.Sessions {
-		if info == nil {
-			continue
-		}
-		// Match against saved path, subdirectories of saved path, or suffix
-		if hookData.Cwd == info.Path || strings.HasPrefix(hookData.Cwd, info.Path+"/") || strings.HasSuffix(hookData.Cwd, "/"+name) {
-			topicID = info.TopicID
-			break
-		}
-	}
-
-	if topicID == 0 || config.GroupID == 0 {
-		return nil
-	}
-
-	return sendMessage(config, config.GroupID, topicID, fmt.Sprintf("🔔 %s", hookData.Notification))
+	// Legacy - now handled by monitor polling
+	return nil
 }
 
 // isCccHook checks if a hook entry contains a ccc command
 func isCccHook(entry interface{}) bool {
-	// Direct command hook: {"command": "...", "type": "command"}
 	if m, ok := entry.(map[string]interface{}); ok {
 		if cmd, ok := m["command"].(string); ok {
 			return strings.Contains(cmd, "ccc hook")
 		}
-		// Wrapper hook: {"hooks": [...], "matcher": "..."}
 		if hooks, ok := m["hooks"].([]interface{}); ok {
 			for _, h := range hooks {
 				if hm, ok := h.(map[string]interface{}); ok {
@@ -577,7 +205,6 @@ func isCccHook(entry interface{}) bool {
 	return false
 }
 
-// removeCccHooks removes all ccc hooks from a hook array
 func removeCccHooks(hookArray []interface{}) []interface{} {
 	var result []interface{}
 	for _, entry := range hookArray {
@@ -607,52 +234,9 @@ func installHook() error {
 		hooks = make(map[string]interface{})
 	}
 
-	// Define all ccc hooks to install (new format with matcher and hooks array)
+	// Only install hooks for interactive features (AskUserQuestion)
+	// Output syncing is handled by the polling monitor
 	cccHooks := map[string][]interface{}{
-		"Stop": {
-			map[string]interface{}{
-				"hooks": []interface{}{
-					map[string]interface{}{
-						"command": cccPath + " hook",
-						"type":    "command",
-					},
-				},
-				"matcher": "",
-			},
-		},
-		"Notification": {
-			map[string]interface{}{
-				"hooks": []interface{}{
-					map[string]interface{}{
-						"command": cccPath + " hook-notification",
-						"type":    "command",
-					},
-				},
-				"matcher": "",
-			},
-		},
-		"PermissionRequest": {
-			map[string]interface{}{
-				"hooks": []interface{}{
-					map[string]interface{}{
-						"command": cccPath + " hook-permission",
-						"type":    "command",
-					},
-				},
-				"matcher": "",
-			},
-		},
-		"PostToolUse": {
-			map[string]interface{}{
-				"hooks": []interface{}{
-					map[string]interface{}{
-						"command": cccPath + " hook-output",
-						"type":    "command",
-					},
-				},
-				"matcher": "",
-			},
-		},
 		"PreToolUse": {
 			map[string]interface{}{
 				"hooks": []interface{}{
@@ -663,36 +247,28 @@ func installHook() error {
 				},
 				"matcher": "AskUserQuestion",
 			},
-			map[string]interface{}{
-				"hooks": []interface{}{
-					map[string]interface{}{
-						"command": cccPath + " hook-output",
-						"type":    "command",
-					},
-				},
-				"matcher": "",
-			},
-		},
-		"UserPromptSubmit": {
-			map[string]interface{}{
-				"hooks": []interface{}{
-					map[string]interface{}{
-						"command": cccPath + " hook-prompt",
-						"type":    "command",
-					},
-				},
-				"matcher": "",
-			},
 		},
 	}
 
-	// For each hook type, remove existing ccc hooks and add new ones
+	// Remove ALL existing ccc hooks from all hook types
+	allHookTypes := []string{"Stop", "Notification", "PermissionRequest", "PostToolUse", "PreToolUse", "UserPromptSubmit"}
+	for _, hookType := range allHookTypes {
+		if existing, ok := hooks[hookType].([]interface{}); ok {
+			filtered := removeCccHooks(existing)
+			if len(filtered) == 0 {
+				delete(hooks, hookType)
+			} else {
+				hooks[hookType] = filtered
+			}
+		}
+	}
+
+	// Add only the hooks we need
 	for hookType, newHooks := range cccHooks {
 		var existingHooks []interface{}
 		if existing, ok := hooks[hookType].([]interface{}); ok {
-			existingHooks = removeCccHooks(existing)
+			existingHooks = existing
 		}
-		// Add ccc hooks to the beginning
 		hooks[hookType] = append(newHooks, existingHooks...)
 	}
 
@@ -731,7 +307,6 @@ func uninstallHook() error {
 		return nil
 	}
 
-	// Remove ccc hooks from each hook type
 	hookTypes := []string{"Stop", "Notification", "PermissionRequest", "PostToolUse", "PreToolUse", "UserPromptSubmit"}
 	for _, hookType := range hookTypes {
 		if existing, ok := hooks[hookType].([]interface{}); ok {
@@ -821,4 +396,28 @@ func uninstallSkill() error {
 	skillPath := filepath.Join(home, ".claude", "skills", "ccc-send.md")
 	os.Remove(skillPath)
 	return nil
+}
+
+// truncate shortens a string to n characters
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
+
+// getLastAssistantMessage reads the transcript and returns the last assistant text
+func getLastAssistantMessage(transcriptPath string) string {
+	// Legacy - kept for compatibility but no longer actively used
+	return ""
+}
+
+// hookLog writes debug log entries
+func hookLog(format string, args ...interface{}) {
+	f, err := os.OpenFile("/tmp/ccc-hook-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "[%s] %s\n", time.Now().Format("15:04:05"), fmt.Sprintf(format, args...))
 }

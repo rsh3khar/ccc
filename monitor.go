@@ -93,6 +93,7 @@ func getLastBlocksFromTmux(tmuxSession string) []string {
 	}
 
 	// Try each prompt from most recent to oldest, return first one with blocks
+	hookLog("parser: %d prompts, %d inputBoxes, %d total lines", len(prompts), len(inputBoxes), len(lines))
 	for p := len(prompts) - 1; p >= 0; p-- {
 		promptIdx := prompts[p]
 
@@ -105,7 +106,9 @@ func getLastBlocksFromTmux(tmuxSession string) []string {
 			}
 		}
 
+		hookLog("parser: trying prompt %d at line %d (end %d): %s", p, promptIdx, endIdx, truncate(strings.TrimSpace(lines[promptIdx]), 40))
 		blocks := extractBlocks(lines, promptIdx+1, endIdx)
+		hookLog("parser: found %d blocks", len(blocks))
 		if len(blocks) > 0 {
 			return blocks
 		}
@@ -270,6 +273,7 @@ func startSessionMonitor(config *Config) {
 			monitorsMu.Unlock()
 
 			blocks := getLastBlocksFromTmux(tmuxName)
+			hookLog("monitor: session=%s blocks=%d", sessName, len(blocks))
 
 			// No blocks = nothing to do
 			if len(blocks) == 0 {

@@ -59,8 +59,8 @@ func clearBlockCache(sessionName string) {
 }
 
 // getLastBlocksFromTmux captures the tmux pane and extracts assistant blocks
-// after the last user prompt (❯). Each block starts with ⏺ and ends at the
-// next ⏺ or the input box (────).
+// after the last user prompt (❯) that has response blocks. Each block starts
+// with ● and ends at the next ● or the input box (────).
 func getLastBlocksFromTmux(tmuxSession string) []string {
 	cmd := exec.Command(tmuxPath, "capture-pane", "-t", tmuxSession, "-p", "-S", "-500")
 	output, err := cmd.Output()
@@ -70,53 +70,64 @@ func getLastBlocksFromTmux(tmuxSession string) []string {
 
 	lines := strings.Split(string(output), "\n")
 
-	// Find the last user prompt (❯) before the input box
-	lastPromptIdx := -1
-	inputBoxIdx := len(lines)
-	for i := len(lines) - 1; i >= 0; i-- {
-		trimmed := strings.TrimSpace(lines[i])
+	// Collect all ❯ prompt positions and ──── input box positions
+	var prompts []int   // indices of ❯ lines with content
+	var inputBoxes []int // indices of ──── lines
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "────") {
-			inputBoxIdx = i
-			continue
-		}
-		if strings.HasPrefix(trimmed, "❯") && i < inputBoxIdx {
+			inputBoxes = append(inputBoxes, i)
+		} else if strings.HasPrefix(trimmed, "❯") {
 			content := strings.TrimSpace(strings.TrimPrefix(trimmed, "❯"))
-			if content == "" && lastPromptIdx == -1 {
-				// Empty prompt at the end, keep looking
-				continue
+			if content != "" {
+				prompts = append(prompts, i)
 			}
-			lastPromptIdx = i
-			break
 		}
 	}
 
-	if lastPromptIdx == -1 {
+	if len(prompts) == 0 {
 		return nil
 	}
 
-	// Extract blocks between lastPromptIdx and inputBoxIdx
+	// Try each prompt from most recent to oldest, return first one with blocks
+	for p := len(prompts) - 1; p >= 0; p-- {
+		promptIdx := prompts[p]
+
+		// Find the next input box after this prompt (or end of capture)
+		endIdx := len(lines)
+		for _, ib := range inputBoxes {
+			if ib > promptIdx {
+				endIdx = ib
+				break
+			}
+		}
+
+		blocks := extractBlocks(lines, promptIdx+1, endIdx)
+		if len(blocks) > 0 {
+			return blocks
+		}
+	}
+
+	return nil
+}
+
+// extractBlocks extracts ● bullet blocks from lines[start:end]
+func extractBlocks(lines []string, start, end int) []string {
 	var blocks []string
 	var currentBlock strings.Builder
 	inBlock := false
 
-	for i := lastPromptIdx + 1; i < inputBoxIdx; i++ {
+	for i := start; i < end; i++ {
 		line := lines[i]
 		trimmed := strings.TrimSpace(line)
 
-		// Detect block start: ⏺ (U+23FA) or ● or ✻
-		if strings.HasPrefix(trimmed, "⏺") || strings.HasPrefix(line, "● ") || strings.HasPrefix(line, "✻ ") {
+		if isBulletLine(trimmed) {
 			if inBlock && currentBlock.Len() > 0 {
 				blocks = append(blocks, strings.TrimSpace(currentBlock.String()))
 			}
 			currentBlock.Reset()
-			// Remove the bullet prefix
-			blockText := trimmed
-			for _, prefix := range []string{"⏺ ", "⏺  ", "● ", "✻ "} {
-				if strings.HasPrefix(blockText, prefix) {
-					blockText = strings.TrimPrefix(blockText, prefix)
-					break
-				}
-			}
+			blockText := removeBulletPrefix(trimmed)
 			currentBlock.WriteString(blockText)
 			inBlock = true
 		} else if inBlock {
@@ -129,7 +140,6 @@ func getLastBlocksFromTmux(tmuxSession string) []string {
 		}
 	}
 
-	// Don't forget the last block
 	if inBlock && currentBlock.Len() > 0 {
 		blocks = append(blocks, strings.TrimSpace(currentBlock.String()))
 	}
@@ -137,7 +147,22 @@ func getLastBlocksFromTmux(tmuxSession string) []string {
 	return blocks
 }
 
-// isClaudeIdle checks if Claude is waiting for input (❯ prompt visible)
+func isBulletLine(trimmed string) bool {
+	return strings.HasPrefix(trimmed, "⏺") ||
+		strings.HasPrefix(trimmed, "● ") ||
+		strings.HasPrefix(trimmed, "✻ ")
+}
+
+func removeBulletPrefix(s string) string {
+	for _, prefix := range []string{"⏺ ", "⏺  ", "● ", "✻ "} {
+		if strings.HasPrefix(s, prefix) {
+			return strings.TrimPrefix(s, prefix)
+		}
+	}
+	return s
+}
+
+// isClaudeIdle checks if Claude is waiting for input (empty ❯ prompt visible)
 func isClaudeIdle(tmuxSession string) bool {
 	cmd := exec.Command(tmuxPath, "capture-pane", "-t", tmuxSession, "-p", "-S", "-10")
 	output, err := cmd.Output()
@@ -146,7 +171,7 @@ func isClaudeIdle(tmuxSession string) bool {
 	}
 
 	lines := strings.Split(string(output), "\n")
-	// Look for input box (────) followed by empty prompt (❯)
+	// Look for input box (────) followed by empty prompt (❯ with no text)
 	foundInputBox := false
 	for i := len(lines) - 1; i >= 0; i-- {
 		trimmed := strings.TrimSpace(lines[i])
@@ -154,14 +179,15 @@ func isClaudeIdle(tmuxSession string) bool {
 			continue
 		}
 		if strings.HasPrefix(trimmed, "❯") && foundInputBox {
-			return true
+			// Only idle if prompt is empty (no text after ❯)
+			content := strings.TrimSpace(strings.TrimPrefix(trimmed, "❯"))
+			return content == ""
 		}
 		if strings.HasPrefix(trimmed, "────") {
 			foundInputBox = true
 			continue
 		}
 		if foundInputBox {
-			// Something between input box and bottom that's not ❯
 			return false
 		}
 	}

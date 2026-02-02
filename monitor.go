@@ -222,6 +222,12 @@ func syncBlocksToTelegram(config *Config, sessionName string, topicID int64, isF
 				cache.Blocks[i].Text = block
 				if cache.Blocks[i].MsgID > 0 {
 					editMessage(config, config.GroupID, cache.Blocks[i].MsgID, topicID, displayText)
+				} else {
+					// Seeded block changed - send as new message
+					msgID, err := sendMessageGetID(config, config.GroupID, topicID, displayText)
+					if err == nil && msgID > 0 {
+						cache.Blocks[i].MsgID = msgID
+					}
 				}
 			} else if isFinal && i == len(blocks)-1 && cache.Blocks[i].MsgID > 0 {
 				// Even if text didn't change, add ✅ prefix on final
@@ -273,7 +279,27 @@ func startSessionMonitor(config *Config) {
 			monitorsMu.Unlock()
 
 			blocks := getLastBlocksFromTmux(tmuxName)
-			hookLog("monitor: session=%s blocks=%d", sessName, len(blocks))
+			hookLog("monitor: session=%s blocks=%d firstPoll=%v", sessName, len(blocks), !exists)
+
+			// First time seeing this session: seed with existing blocks without sending
+			if !exists && len(blocks) > 0 {
+				mon.LastBlocks = blocks
+				mon.StableCount = 0
+				// If Claude is idle, mark completed immediately
+				if isClaudeIdle(tmuxName) {
+					mon.Completed = true
+				}
+				// Populate cache so we don't re-send these blocks later
+				cache := loadBlockCache(sessName)
+				if len(cache.Blocks) == 0 {
+					for _, b := range blocks {
+						cache.Blocks = append(cache.Blocks, CachedBlock{Text: b, MsgID: 0})
+					}
+					saveBlockCache(sessName, cache)
+				}
+				hookLog("monitor: seeded session=%s with %d existing blocks (idle=%v)", sessName, len(blocks), mon.Completed)
+				continue
+			}
 
 			// No blocks = nothing to do
 			if len(blocks) == 0 {

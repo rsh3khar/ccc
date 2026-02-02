@@ -80,6 +80,8 @@ func getLastBlocksFromTmux(tmuxSession string) []string {
 			inputBoxes = append(inputBoxes, i)
 		} else if strings.HasPrefix(trimmed, "❯") {
 			content := strings.TrimSpace(strings.TrimPrefix(trimmed, "❯"))
+			// Also trim non-breaking space (U+00A0) which Claude Code uses
+			content = strings.TrimSpace(strings.ReplaceAll(content, "\u00a0", ""))
 			if content != "" {
 				prompts = append(prompts, i)
 			}
@@ -181,6 +183,7 @@ func isClaudeIdle(tmuxSession string) bool {
 		if strings.HasPrefix(trimmed, "❯") && foundInputBox {
 			// Only idle if prompt is empty (no text after ❯)
 			content := strings.TrimSpace(strings.TrimPrefix(trimmed, "❯"))
+			content = strings.ReplaceAll(content, "\u00a0", "")
 			return content == ""
 		}
 		if strings.HasPrefix(trimmed, "────") {

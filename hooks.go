@@ -50,6 +50,9 @@ func handleHook() error {
 
 	fmt.Fprintf(os.Stderr, "hook: session=%s topic=%d\n", sessionName, topicID)
 
+	// Wait briefly for transcript to be fully written
+	time.Sleep(500 * time.Millisecond)
+
 	// Read last message from transcript
 	lastMessage := "Session ended"
 	if hookData.TranscriptPath != "" {

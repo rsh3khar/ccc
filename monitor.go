@@ -105,13 +105,13 @@ func getLastBlocksFromTmux(tmuxSession string) []string {
 	for p := len(prompts) - 1; p >= 0; p-- {
 		promptIdx := prompts[p]
 
-		// Find the next input box after this prompt (or end of capture)
+		// Find the next user prompt after this one (or end of capture)
+		// We don't stop at ─── lines because blocks can appear between
+		// input box separators (e.g. after a diff block with ─── borders)
 		endIdx := len(lines)
-		for _, ib := range inputBoxes {
-			if ib > promptIdx {
-				endIdx = ib
-				break
-			}
+		for pp := p + 1; pp < len(prompts); pp++ {
+			endIdx = prompts[pp]
+			break
 		}
 
 		hookLog("parser: trying prompt %d at line %d (end %d): %s", p, promptIdx, endIdx, truncate(strings.TrimSpace(lines[promptIdx]), 40))

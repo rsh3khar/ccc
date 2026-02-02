@@ -824,7 +824,7 @@ func listen() error {
 			}
 
 			if text == "/update" {
-				updateCCC(config, chatID, threadID)
+				updateCCC(config, chatID, threadID, offset)
 				continue
 			}
 

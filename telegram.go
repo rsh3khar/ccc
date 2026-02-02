@@ -44,7 +44,7 @@ func telegramClientGet(client *http.Client, token string, url string) (*http.Res
 }
 
 // updateCCC downloads the latest ccc binary from GitHub releases and restarts
-func updateCCC(config *Config, chatID, threadID int64) {
+func updateCCC(config *Config, chatID, threadID int64, offset int) {
 	sendMessage(config, chatID, threadID, "🔄 Updating ccc...")
 
 	binaryName := fmt.Sprintf("ccc-%s-%s", runtime.GOOS, runtime.GOARCH)
@@ -90,6 +90,8 @@ func updateCCC(config *Config, chatID, threadID int64) {
 	}
 
 	sendMessage(config, chatID, threadID, "✅ Updated. Restarting...")
+	// Confirm offset so the /update message is not reprocessed after restart
+	http.Get(fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?offset=%d&timeout=1", config.BotToken, offset))
 	os.Exit(0)
 }
 

@@ -56,17 +56,33 @@ func handleHook() error {
 	// Read last message from transcript
 	lastMessage := "Session ended"
 	if hookData.TranscriptPath != "" {
+		fmt.Fprintf(os.Stderr, "hook-stop: reading transcript %s\n", hookData.TranscriptPath)
 		if msg := getLastAssistantMessage(hookData.TranscriptPath); msg != "" {
 			lastMessage = msg
+			fmt.Fprintf(os.Stderr, "hook-stop: last message (first 100 chars): %s\n", truncate(lastMessage, 100))
+		} else {
+			fmt.Fprintf(os.Stderr, "hook-stop: no assistant message found in transcript\n")
 		}
+	} else {
+		fmt.Fprintf(os.Stderr, "hook-stop: no transcript path provided\n")
 	}
 
-	// Clear the cache so future PostToolUse hooks don't think this message was sent
+	// Check if this message was already sent by PostToolUse
 	cacheFile := filepath.Join(os.TempDir(), "ccc-cache-"+sessionName)
-	os.Remove(cacheFile)
 	msgIDFile := filepath.Join(os.TempDir(), "ccc-msgid-"+sessionName)
+	lastSent, _ := os.ReadFile(cacheFile)
+	if strings.TrimSpace(string(lastSent)) == strings.TrimSpace(lastMessage) {
+		fmt.Fprintf(os.Stderr, "hook-stop: message already sent by PostToolUse, skipping\n")
+		os.Remove(cacheFile)
+		os.Remove(msgIDFile)
+		return nil
+	}
+
+	// Clear the cache
+	os.Remove(cacheFile)
 	os.Remove(msgIDFile)
 
+	fmt.Fprintf(os.Stderr, "hook-stop: sending final message\n")
 	// Always send the Stop message (final result)
 	return sendMessage(config, config.GroupID, topicID, fmt.Sprintf("✅ %s\n\n%s", sessionName, lastMessage))
 }
@@ -175,6 +191,13 @@ func handlePermissionHook() error {
 	}()
 
 	return nil
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 func getLastAssistantMessage(transcriptPath string) string {

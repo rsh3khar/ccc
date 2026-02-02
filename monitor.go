@@ -17,6 +17,8 @@ type SessionMonitor struct {
 	StableCount   int       // how many consecutive polls blocks haven't changed
 	Completed     bool      // whether we've already sent ✅
 	LastPromptIdx int       // track which prompt we're on
+	Sleeping      bool      // true after 1 min of no activity
+	LastActivity  time.Time // last time blocks changed or new blocks appeared
 }
 
 var (
@@ -267,7 +269,7 @@ func syncBlocksToTelegram(config *Config, sessionName string, topicID int64, isF
 // sessions every few seconds, parses their terminal output, and syncs blocks
 // to Telegram.
 func startSessionMonitor(config *Config) {
-	ticker := time.NewTicker(7 * time.Second)
+	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
@@ -290,10 +292,15 @@ func startSessionMonitor(config *Config) {
 			monitorsMu.Lock()
 			mon, exists := monitors[sessName]
 			if !exists {
-				mon = &SessionMonitor{}
+				mon = &SessionMonitor{LastActivity: time.Now()}
 				monitors[sessName] = mon
 			}
 			monitorsMu.Unlock()
+
+			// Skip sleeping sessions
+			if mon.Sleeping {
+				continue
+			}
 
 			blocks := getLastBlocksFromTmux(tmuxName)
 			hookLog("monitor: session=%s blocks=%d firstPoll=%v", sessName, len(blocks), !exists)
@@ -336,10 +343,17 @@ func startSessionMonitor(config *Config) {
 				mon.LastBlocks = blocks
 				mon.StableCount = 0
 				mon.Completed = false
+				mon.LastActivity = time.Now()
 				// Sync intermediate state
 				syncBlocksToTelegram(freshConfig, sessName, info.TopicID, false)
 			} else {
 				mon.StableCount++
+				// Sleep after 1 minute of no activity
+				if time.Since(mon.LastActivity) > 1*time.Minute {
+					hookLog("monitor: session=%s sleeping after 1 min inactivity", sessName)
+					mon.Sleeping = true
+					continue
+				}
 			}
 
 			// If blocks are stable for 2+ polls AND Claude is idle → mark complete

@@ -845,6 +845,36 @@ func listen() error {
 				continue
 			}
 
+			// /continue command - restart session preserving conversation history
+			if text == "/continue" && isGroup && threadID > 0 {
+				config, _ = loadConfig()
+				sessName := getSessionByTopic(config, threadID)
+				if sessName == "" {
+					sendMessage(config, chatID, threadID, "❌ No session mapped to this topic. Use /new <name> to create one.")
+					continue
+				}
+				tmuxName := "claude-" + sessName
+				if tmuxSessionExists(tmuxName) {
+					killTmuxSession(tmuxName)
+					time.Sleep(300 * time.Millisecond)
+				}
+				workDir := resolveProjectPath(config, sessName)
+				if _, err := os.Stat(workDir); os.IsNotExist(err) {
+					os.MkdirAll(workDir, 0755)
+				}
+				if err := createTmuxSession(tmuxName, workDir, true); err != nil {
+					sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Failed to start: %v", err))
+				} else {
+					time.Sleep(500 * time.Millisecond)
+					if tmuxSessionExists(tmuxName) {
+						sendMessage(config, chatID, threadID, fmt.Sprintf("🔄 Session '%s' restarted with conversation history", sessName))
+					} else {
+						sendMessage(config, chatID, threadID, "⚠️ Session died immediately")
+					}
+				}
+				continue
+			}
+
 			// /new command - create/restart session
 			if strings.HasPrefix(text, "/new") && isGroup {
 				config, _ = loadConfig()
@@ -1014,6 +1044,7 @@ TELEGRAM COMMANDS:
     /new <name>             Create new session with topic (in projects_dir)
     /new ~/path/name        Create session with custom path
     /new                    Restart session in current topic
+    /continue               Restart session keeping conversation history
     /c <cmd>                Execute shell command
     /update                 Update ccc binary from GitHub
 

@@ -151,6 +151,7 @@ That's it! You're ready to control Claude Code from Telegram.
 | `/new <name>` | Create new session + topic (in projects directory) |
 | `/new ~/path/name` | Create session in custom location |
 | `/new` | Restart session in current topic (kills if running) |
+| `/continue` | Restart session keeping conversation history |
 | `/c <cmd>` | Run shell command on your machine |
 | `/update` | Update ccc binary from latest GitHub release |
 | `/stats` | Show system stats (uptime, CPU, memory, disk) |

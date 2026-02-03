@@ -5,6 +5,11 @@
 [![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+---
+
+<img width="1754" height="658" alt="ss-modified" src="https://github.com/user-attachments/assets/cf291c73-45ae-4d08-8493-782ed1e32d26" />
+
+
 ## Why ccc?
 
 Ever wanted to:

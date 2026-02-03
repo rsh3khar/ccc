@@ -402,11 +402,33 @@ func createForumTopic(config *Config, name string) (int64, error) {
 	return topic.MessageThreadID, nil
 }
 
+func deleteForumTopic(config *Config, topicID int64) error {
+	if config.GroupID == 0 {
+		return fmt.Errorf("no group configured")
+	}
+
+	params := url.Values{
+		"chat_id":           {fmt.Sprintf("%d", config.GroupID)},
+		"message_thread_id": {fmt.Sprintf("%d", topicID)},
+	}
+
+	result, err := telegramAPI(config, "deleteForumTopic", params)
+	if err != nil {
+		return err
+	}
+	if !result.OK {
+		return fmt.Errorf("failed to delete topic: %s", result.Description)
+	}
+
+	return nil
+}
+
 // setBotCommands sets the bot commands in Telegram
 func setBotCommands(botToken string) {
 	commands := `{
 		"commands": [
 			{"command": "new", "description": "Create/restart session: /new <name>"},
+			{"command": "delete", "description": "Delete current session and thread"},
 			{"command": "c", "description": "Execute shell command: /c <cmd>"},
 			{"command": "update", "description": "Update ccc binary from GitHub"},
 			{"command": "stats", "description": "Show system stats (RAM, disk, etc)"},

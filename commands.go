@@ -880,6 +880,33 @@ func listen() error {
 				continue
 			}
 
+			// /delete command - delete session and thread
+			if text == "/delete" && isGroup && threadID > 0 {
+				config, _ = loadConfig()
+				sessName := getSessionByTopic(config, threadID)
+				if sessName == "" {
+					sendMessage(config, chatID, threadID, "❌ No session mapped to this topic.")
+					continue
+				}
+				// Kill tmux session
+				tmuxName := "claude-" + sessName
+				if tmuxSessionExists(tmuxName) {
+					killTmuxSession(tmuxName)
+				}
+				// Remove from config
+				topicID := config.Sessions[sessName].TopicID
+				delete(config.Sessions, sessName)
+				saveConfig(config)
+				// Clear monitor and cache
+				ResetSessionMonitor(sessName)
+				// Delete telegram thread
+				if err := deleteForumTopic(config, topicID); err != nil {
+					sendMessage(config, chatID, threadID, fmt.Sprintf("⚠️ Session deleted but failed to delete thread: %v", err))
+				}
+				// No message needed - thread is gone
+				continue
+			}
+
 			// /new command - create/restart session
 			if strings.HasPrefix(text, "/new") && isGroup {
 				config, _ = loadConfig()

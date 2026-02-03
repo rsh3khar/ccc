@@ -348,9 +348,9 @@ func startSessionMonitor(config *Config) {
 				syncBlocksToTelegram(freshConfig, sessName, info.TopicID, false)
 			} else {
 				mon.StableCount++
-				// Sleep after 1 minute of no activity
-				if time.Since(mon.LastActivity) > 1*time.Minute {
-					hookLog("monitor: session=%s sleeping after 1 min inactivity", sessName)
+				// Sleep after 5 minutes of no activity
+				if time.Since(mon.LastActivity) > 5*time.Minute {
+					hookLog("monitor: session=%s sleeping after 5 min inactivity", sessName)
 					mon.Sleeping = true
 					continue
 				}

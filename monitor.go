@@ -129,7 +129,7 @@ func getLastBlocksFromTmux(tmuxSession string) []string {
 }
 
 // extractBlocks extracts ● bullet blocks from lines[start:end]
-// Stops at the first ─── line (input box) - nothing after that is processed
+// Stops at the first ─── line (input box) or status line - nothing after that is processed
 func extractBlocks(lines []string, start, end int) []string {
 	var blocks []string
 	var currentBlock strings.Builder
@@ -139,12 +139,12 @@ func extractBlocks(lines []string, start, end int) []string {
 		line := lines[i]
 		trimmed := strings.TrimSpace(line)
 
-		// Stop at input box - don't process anything after ───
-		if strings.HasPrefix(trimmed, "───") {
+		// Stop at input box or status indicators
+		if strings.HasPrefix(trimmed, "───") || isStatusLine(trimmed) {
 			break
 		}
 
-		// Skip status line and ❯ prompts
+		// Skip bottom status line and ❯ prompts
 		if strings.HasPrefix(trimmed, "⏵⏵") || strings.HasPrefix(trimmed, "❯") {
 			continue
 		}
@@ -178,6 +178,15 @@ func isBulletLine(trimmed string) bool {
 	return strings.HasPrefix(trimmed, "⏺") ||
 		strings.HasPrefix(trimmed, "● ") ||
 		strings.HasPrefix(trimmed, "✻ ")
+}
+
+// isStatusLine checks for transient status indicators that should stop block capture
+func isStatusLine(trimmed string) bool {
+	return strings.HasPrefix(trimmed, "✱") || // Hashing, Thinking
+		strings.HasPrefix(trimmed, "✢") || // Symbioting, Computing
+		strings.HasPrefix(trimmed, "✽") || // Other status
+		strings.HasPrefix(trimmed, "+") || // Progress indicator
+		strings.HasPrefix(trimmed, "*") // Alternative status
 }
 
 func removeBulletPrefix(s string) string {

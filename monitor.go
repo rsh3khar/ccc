@@ -129,25 +129,22 @@ func getLastBlocksFromTmux(tmuxSession string) []string {
 }
 
 // extractBlocks extracts ● bullet blocks from lines[start:end]
+// Stops at the first ─── line (input box) - nothing after that is processed
 func extractBlocks(lines []string, start, end int) []string {
 	var blocks []string
 	var currentBlock strings.Builder
 	inBlock := false
 
-	// Find the last input box (final ───) to know where to stop
-	lastInputBox := end
-	for i := end - 1; i >= start; i-- {
-		if strings.HasPrefix(strings.TrimSpace(lines[i]), "───") {
-			lastInputBox = i
-			break
-		}
-	}
-
-	for i := start; i < lastInputBox; i++ {
+	for i := start; i < end; i++ {
 		line := lines[i]
 		trimmed := strings.TrimSpace(line)
 
-		// Skip status line and empty ❯ prompts
+		// Stop at input box - don't process anything after ───
+		if strings.HasPrefix(trimmed, "───") {
+			break
+		}
+
+		// Skip status line and ❯ prompts
 		if strings.HasPrefix(trimmed, "⏵⏵") || strings.HasPrefix(trimmed, "❯") {
 			continue
 		}

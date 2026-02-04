@@ -425,25 +425,40 @@ func deleteForumTopic(config *Config, topicID int64) error {
 
 // setBotCommands sets the bot commands in Telegram
 func setBotCommands(botToken string) {
-	commands := `{
-		"commands": [
-			{"command": "new", "description": "Create/restart session: /new <name>"},
-			{"command": "delete", "description": "Delete current session and thread"},
-			{"command": "c", "description": "Execute shell command: /c <cmd>"},
-			{"command": "update", "description": "Update ccc binary from GitHub"},
-			{"command": "stats", "description": "Show system stats (RAM, disk, etc)"},
-			{"command": "auth", "description": "Re-authenticate Claude OAuth"}
-		]
-	}`
+	commands := []map[string]string{
+		{"command": "new", "description": "Create/restart session: /new <name>"},
+		{"command": "delete", "description": "Delete current session and thread"},
+		{"command": "c", "description": "Execute shell command: /c <cmd>"},
+		{"command": "continue", "description": "Restart session with history"},
+		{"command": "update", "description": "Update ccc binary from GitHub"},
+		{"command": "stats", "description": "Show system stats (RAM, disk, etc)"},
+		{"command": "auth", "description": "Re-authenticate Claude OAuth"},
+	}
 
+	// Set for default scope
+	defaultBody, _ := json.Marshal(map[string]interface{}{
+		"commands": commands,
+	})
 	resp, err := http.Post(
 		fmt.Sprintf("https://api.telegram.org/bot%s/setMyCommands", botToken),
 		"application/json",
-		strings.NewReader(commands),
+		bytes.NewReader(defaultBody),
 	)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to set bot commands: %v\n", redactTokenError(err, botToken))
-		return
+	if err == nil {
+		resp.Body.Close()
 	}
-	resp.Body.Close()
+
+	// Set for all group chats (makes the / button appear)
+	groupBody, _ := json.Marshal(map[string]interface{}{
+		"commands": commands,
+		"scope":    map[string]string{"type": "all_group_chats"},
+	})
+	resp, err = http.Post(
+		fmt.Sprintf("https://api.telegram.org/bot%s/setMyCommands", botToken),
+		"application/json",
+		bytes.NewReader(groupBody),
+	)
+	if err == nil {
+		resp.Body.Close()
+	}
 }

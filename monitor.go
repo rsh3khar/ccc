@@ -13,12 +13,13 @@ import (
 
 // SessionMonitor tracks the state of each session for polling
 type SessionMonitor struct {
-	LastBlocks    []string  // blocks from last poll
-	StableCount   int       // how many consecutive polls blocks haven't changed
-	Completed     bool      // whether we've already sent ✅
-	LastPromptIdx int       // track which prompt we're on
-	Sleeping      bool      // true after 1 min of no activity
-	LastActivity  time.Time // last time blocks changed or new blocks appeared
+	LastBlocks      []string  // blocks from last poll
+	StableCount     int       // how many consecutive polls blocks haven't changed
+	Completed       bool      // whether we've already sent ✅
+	LastPromptIdx   int       // track which prompt we're on
+	LastUserMessage time.Time // when user last sent a message (for slow polling)
+	LastActivity    time.Time // last time blocks changed or new blocks appeared
+	SlowPollCounter int       // counter for slow polling (poll every 10th tick = 30s)
 }
 
 var (
@@ -292,14 +293,19 @@ func startSessionMonitor(config *Config) {
 			monitorsMu.Lock()
 			mon, exists := monitors[sessName]
 			if !exists {
-				mon = &SessionMonitor{LastActivity: time.Now()}
+				now := time.Now()
+				mon = &SessionMonitor{LastActivity: now, LastUserMessage: now}
 				monitors[sessName] = mon
 			}
 			monitorsMu.Unlock()
 
-			// Skip sleeping sessions
-			if mon.Sleeping {
-				continue
+			// Slow polling: if no user message for 5+ min, poll every 30s instead of 3s
+			if time.Since(mon.LastUserMessage) > 5*time.Minute {
+				mon.SlowPollCounter++
+				if mon.SlowPollCounter < 10 { // 10 ticks * 3s = 30s
+					continue
+				}
+				mon.SlowPollCounter = 0
 			}
 
 			blocks := getLastBlocksFromTmux(tmuxName)
@@ -348,12 +354,6 @@ func startSessionMonitor(config *Config) {
 				syncBlocksToTelegram(freshConfig, sessName, info.TopicID, false)
 			} else {
 				mon.StableCount++
-				// Sleep after 5 minutes of no activity
-				if time.Since(mon.LastActivity) > 5*time.Minute {
-					hookLog("monitor: session=%s sleeping after 5 min inactivity", sessName)
-					mon.Sleeping = true
-					continue
-				}
 			}
 
 			// If blocks are stable for 2+ polls AND Claude is idle → mark complete

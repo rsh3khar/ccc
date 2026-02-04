@@ -310,17 +310,26 @@ func startSessionMonitor(config *Config) {
 			}
 			monitorsMu.Unlock()
 
-			// Slow polling: if no user message AND no Claude activity for 5+ min, poll every 30s
-			userInactive := time.Since(mon.LastUserMessage) > 5*time.Minute
-			claudeInactive := time.Since(mon.LastActivity) > 5*time.Minute
-			if userInactive && claudeInactive {
+			// Polling schedule based on time since last user message:
+			// - First 1 minute: poll every 3s (normal ticker rate)
+			// - After 1 minute up to 1 hour: poll every 30s
+			// - After 1 hour: stop polling this session
+			timeSinceUser := time.Since(mon.LastUserMessage)
+
+			if timeSinceUser > 1*time.Hour {
+				// Stop polling after 1 hour of no user activity
+				continue
+			}
+
+			if timeSinceUser > 1*time.Minute {
+				// Slow polling: every 30s (10 ticks * 3s)
 				mon.SlowPollCounter++
-				if mon.SlowPollCounter < 10 { // 10 ticks * 3s = 30s
+				if mon.SlowPollCounter < 10 {
 					continue
 				}
 				mon.SlowPollCounter = 0
 			} else {
-				mon.SlowPollCounter = 0 // Reset counter if there's activity
+				mon.SlowPollCounter = 0 // Reset counter during fast polling
 			}
 
 			blocks := getLastBlocksFromTmux(tmuxName)
@@ -391,8 +400,34 @@ func startSessionMonitor(config *Config) {
 	}
 }
 
-// ResetSessionMonitor clears the monitor state for a session (called when user sends a new message)
+// ResetSessionMonitor marks a session as actively awaiting new output (called when user sends a message)
+// This prevents the monitor from treating the session as idle/completed.
 func ResetSessionMonitor(sessionName string) {
+	monitorsMu.Lock()
+	defer monitorsMu.Unlock()
+
+	// Instead of deleting, mark as actively awaiting response
+	// This prevents the next poll from treating existing blocks as "seed"
+	if mon, exists := monitors[sessionName]; exists {
+		mon.Completed = false
+		mon.StableCount = 0
+		mon.LastUserMessage = time.Now()
+		mon.LastActivity = time.Now()
+		// Keep LastBlocks so we can detect when NEW blocks appear
+	} else {
+		// Create fresh monitor marking user just sent a message
+		monitors[sessionName] = &SessionMonitor{
+			LastUserMessage: time.Now(),
+			LastActivity:    time.Now(),
+			Completed:       false,
+		}
+	}
+	// Don't clear block cache - we need it to know what's already been sent
+}
+
+// ClearSessionMonitor completely removes monitor state and cache (called on /continue, /new, /delete)
+// Use this when the session is being restarted from scratch.
+func ClearSessionMonitor(sessionName string) {
 	monitorsMu.Lock()
 	defer monitorsMu.Unlock()
 	delete(monitors, sessionName)

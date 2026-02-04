@@ -833,6 +833,21 @@ func listen() error {
 				continue
 			}
 
+			if text == "/restart" {
+				sendMessage(config, chatID, threadID, "🔄 Restarting ccc service...")
+				// Re-exec ourselves to restart cleanly
+				go func() {
+					time.Sleep(500 * time.Millisecond)
+					exe, err := os.Executable()
+					if err != nil {
+						return
+					}
+					exec.Command(exe, "listen").Start()
+					os.Exit(0)
+				}()
+				continue
+			}
+
 			if text == "/stats" {
 				stats := getSystemStats()
 				sendMessage(config, chatID, threadID, stats)
@@ -868,6 +883,8 @@ func listen() error {
 					killTmuxSession(tmuxName)
 					time.Sleep(300 * time.Millisecond)
 				}
+				// Clear monitor state and block cache for fresh start
+				ClearSessionMonitor(sessName)
 				workDir := resolveProjectPath(config, sessName)
 				if _, err := os.Stat(workDir); os.IsNotExist(err) {
 					os.MkdirAll(workDir, 0755)
@@ -903,7 +920,7 @@ func listen() error {
 				delete(config.Sessions, sessName)
 				saveConfig(config)
 				// Clear monitor and cache
-				ResetSessionMonitor(sessName)
+				ClearSessionMonitor(sessName)
 				// Delete telegram thread
 				if err := deleteForumTopic(config, topicID); err != nil {
 					sendMessage(config, chatID, threadID, fmt.Sprintf("⚠️ Session deleted but failed to delete thread: %v", err))
@@ -938,7 +955,7 @@ func listen() error {
 					}
 
 					// Clear monitor and cache
-					ResetSessionMonitor(sessName)
+					ClearSessionMonitor(sessName)
 
 					// Delete telegram thread
 					if info.TopicID > 0 && config.GroupID > 0 {
@@ -1133,6 +1150,7 @@ TELEGRAM COMMANDS:
     /continue               Restart session keeping conversation history
     /c <cmd>                Execute shell command
     /update                 Update ccc binary from GitHub
+    /restart                Restart ccc service (fixes stuck monitor)
 
 FLAGS:
     -h, --help              Show this help

@@ -304,13 +304,17 @@ func startSessionMonitor(config *Config) {
 			}
 			monitorsMu.Unlock()
 
-			// Slow polling: if no user message for 5+ min, poll every 30s instead of 3s
-			if time.Since(mon.LastUserMessage) > 5*time.Minute {
+			// Slow polling: if no user message AND no Claude activity for 5+ min, poll every 30s
+			userInactive := time.Since(mon.LastUserMessage) > 5*time.Minute
+			claudeInactive := time.Since(mon.LastActivity) > 5*time.Minute
+			if userInactive && claudeInactive {
 				mon.SlowPollCounter++
 				if mon.SlowPollCounter < 10 { // 10 ticks * 3s = 30s
 					continue
 				}
 				mon.SlowPollCounter = 0
+			} else {
+				mon.SlowPollCounter = 0 // Reset counter if there's activity
 			}
 
 			blocks := getLastBlocksFromTmux(tmuxName)
@@ -349,6 +353,7 @@ func startSessionMonitor(config *Config) {
 
 			// Check if blocks changed
 			changed := !blocksEqual(blocks, mon.LastBlocks)
+			hookLog("monitor: session=%s changed=%v blocks=%d lastBlocks=%d", sessName, changed, len(blocks), len(mon.LastBlocks))
 
 			if changed {
 				mon.LastBlocks = blocks
@@ -362,7 +367,9 @@ func startSessionMonitor(config *Config) {
 			}
 
 			// If blocks are stable for 2+ polls AND Claude is idle → mark complete
-			if !mon.Completed && mon.StableCount >= 2 && isClaudeIdle(tmuxName) {
+			idle := isClaudeIdle(tmuxName)
+			hookLog("monitor: session=%s stable=%d completed=%v idle=%v", sessName, mon.StableCount, mon.Completed, idle)
+			if !mon.Completed && mon.StableCount >= 2 && idle {
 				n := syncBlocksToTelegram(freshConfig, sessName, info.TopicID, true)
 				if n == 0 {
 					sendMessage(freshConfig, freshConfig.GroupID, info.TopicID, fmt.Sprintf("✅ %s", sessName))

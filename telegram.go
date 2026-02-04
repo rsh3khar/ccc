@@ -431,6 +431,7 @@ func setBotCommands(botToken string) {
 		{"command": "c", "description": "Execute shell command: /c <cmd>"},
 		{"command": "continue", "description": "Restart session with history"},
 		{"command": "update", "description": "Update ccc binary from GitHub"},
+		{"command": "version", "description": "Show ccc version"},
 		{"command": "stats", "description": "Show system stats (RAM, disk, etc)"},
 		{"command": "auth", "description": "Re-authenticate Claude OAuth"},
 	}

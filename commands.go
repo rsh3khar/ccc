@@ -839,6 +839,11 @@ func listen() error {
 				continue
 			}
 
+			if text == "/version" {
+				sendMessage(config, chatID, threadID, fmt.Sprintf("ccc %s", version))
+				continue
+			}
+
 			if text == "/auth" {
 				go handleAuth(config, chatID, threadID)
 				continue

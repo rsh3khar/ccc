@@ -428,6 +428,7 @@ func setBotCommands(botToken string) {
 	commands := []map[string]string{
 		{"command": "new", "description": "Create/restart session: /new <name>"},
 		{"command": "delete", "description": "Delete current session and thread"},
+		{"command": "cleanup", "description": "Delete ALL sessions, folders and threads"},
 		{"command": "c", "description": "Execute shell command: /c <cmd>"},
 		{"command": "continue", "description": "Restart session with history"},
 		{"command": "update", "description": "Update ccc binary from GitHub"},

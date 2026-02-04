@@ -912,6 +912,54 @@ func listen() error {
 				continue
 			}
 
+			// /cleanup command - delete ALL sessions, tmux, folders, and threads
+			if text == "/cleanup" {
+				config, _ = loadConfig()
+				if len(config.Sessions) == 0 {
+					sendMessage(config, chatID, threadID, "No sessions to clean up.")
+					continue
+				}
+
+				var cleaned []string
+				var errors []string
+
+				for sessName, info := range config.Sessions {
+					// Kill tmux session
+					tmuxName := "claude-" + sessName
+					if tmuxSessionExists(tmuxName) {
+						killTmuxSession(tmuxName)
+					}
+
+					// Delete project folder
+					if info.Path != "" {
+						if err := os.RemoveAll(info.Path); err != nil {
+							errors = append(errors, fmt.Sprintf("%s folder: %v", sessName, err))
+						}
+					}
+
+					// Clear monitor and cache
+					ResetSessionMonitor(sessName)
+
+					// Delete telegram thread
+					if info.TopicID > 0 && config.GroupID > 0 {
+						deleteForumTopic(config, info.TopicID)
+					}
+
+					cleaned = append(cleaned, sessName)
+				}
+
+				// Clear all sessions from config
+				config.Sessions = make(map[string]*SessionInfo)
+				saveConfig(config)
+
+				msg := fmt.Sprintf("🧹 Cleaned %d sessions: %s", len(cleaned), strings.Join(cleaned, ", "))
+				if len(errors) > 0 {
+					msg += fmt.Sprintf("\n\n⚠️ Errors:\n%s", strings.Join(errors, "\n"))
+				}
+				sendMessage(config, chatID, threadID, msg)
+				continue
+			}
+
 			// /new command - create/restart session
 			if strings.HasPrefix(text, "/new") && isGroup {
 				config, _ = loadConfig()

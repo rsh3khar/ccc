@@ -134,16 +134,21 @@ func extractBlocks(lines []string, start, end int) []string {
 	var currentBlock strings.Builder
 	inBlock := false
 
-	for i := start; i < end; i++ {
+	// Find the last input box (final ───) to know where to stop
+	lastInputBox := end
+	for i := end - 1; i >= start; i-- {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "───") {
+			lastInputBox = i
+			break
+		}
+	}
+
+	for i := start; i < lastInputBox; i++ {
 		line := lines[i]
 		trimmed := strings.TrimSpace(line)
 
-		// Skip input box lines, status line, and empty ❯ prompts
-		if strings.HasPrefix(trimmed, "───") || strings.HasPrefix(trimmed, "⏵⏵") {
-			continue
-		}
-		if strings.HasPrefix(trimmed, "❯") {
-			// ❯ inside output area = input box prompt, skip it
+		// Skip status line and empty ❯ prompts
+		if strings.HasPrefix(trimmed, "⏵⏵") || strings.HasPrefix(trimmed, "❯") {
 			continue
 		}
 

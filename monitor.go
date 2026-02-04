@@ -375,6 +375,11 @@ func startSessionMonitor(config *Config) {
 					sendMessage(freshConfig, freshConfig.GroupID, info.TopicID, fmt.Sprintf("✅ %s", sessName))
 				}
 				mon.Completed = true
+			} else if !mon.Completed && mon.StableCount >= 10 {
+				// Blocks stable for 30s+ but not idle (user might be typing)
+				// Sync anyway to avoid missing messages
+				syncBlocksToTelegram(freshConfig, sessName, info.TopicID, false)
+				hookLog("monitor: session=%s force sync after 30s stable", sessName)
 			}
 		}
 	}

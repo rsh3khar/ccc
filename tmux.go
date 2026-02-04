@@ -155,14 +155,35 @@ func sendToTmuxWithDelay(session string, text string, delay time.Duration) error
 	// Wait for content to load (e.g., images)
 	time.Sleep(delay)
 
-	// Send Enter twice (Claude Code needs double Enter)
-	cmd = exec.Command(tmuxPath, "send-keys", "-t", session, "C-m")
-	if err := cmd.Run(); err != nil {
-		return err
+	// Wait for "↵ send" indicator to appear (Claude Code is ready for Enter)
+	// Poll for up to 5 seconds
+	for i := 0; i < 50; i++ {
+		out, err := exec.Command(tmuxPath, "capture-pane", "-t", session, "-p", "-S", "-3").Output()
+		if err == nil && strings.Contains(string(out), "↵ send") {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	time.Sleep(50 * time.Millisecond)
-	cmd = exec.Command(tmuxPath, "send-keys", "-t", session, "C-m")
-	return cmd.Run()
+
+	// Try sending Enter up to 3 times, checking if it was processed
+	for attempt := 0; attempt < 3; attempt++ {
+		// Send Enter twice (Claude Code needs double Enter)
+		exec.Command(tmuxPath, "send-keys", "-t", session, "C-m").Run()
+		time.Sleep(50 * time.Millisecond)
+		exec.Command(tmuxPath, "send-keys", "-t", session, "C-m").Run()
+
+		// Wait a bit and check if "↵ send" is gone (meaning Enter was processed)
+		time.Sleep(300 * time.Millisecond)
+		out, err := exec.Command(tmuxPath, "capture-pane", "-t", session, "-p", "-S", "-3").Output()
+		if err != nil || !strings.Contains(string(out), "↵ send") {
+			// Either error or indicator gone - Enter was processed
+			return nil
+		}
+		hookLog("sendToTmux: attempt %d - Enter not processed, retrying", attempt+1)
+	}
+
+	hookLog("sendToTmux: Enter still not processed after 3 attempts")
+	return nil
 }
 
 func killTmuxSession(name string) error {

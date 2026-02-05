@@ -952,12 +952,8 @@ func listen() error {
 						killTmuxSession(tmuxName)
 					}
 
-					// Delete project folder
-					if info.Path != "" {
-						if err := os.RemoveAll(info.Path); err != nil {
-							errors = append(errors, fmt.Sprintf("%s folder: %v", sessName, err))
-						}
-					}
+					// NOTE: No longer deleting project folders - only tmux sessions and threads
+					_ = info // Keep info reference for TopicID below
 
 					// Clear monitor and cache
 					ClearSessionMonitor(sessName)

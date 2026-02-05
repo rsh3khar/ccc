@@ -885,7 +885,12 @@ func listen() error {
 				}
 				// Clear monitor state and block cache for fresh start
 				ClearSessionMonitor(sessName)
-				workDir := resolveProjectPath(config, sessName)
+				// Use the stored path from config, fallback to resolveProjectPath
+				sessionInfo := config.Sessions[sessName]
+				workDir := sessionInfo.Path
+				if workDir == "" {
+					workDir = resolveProjectPath(config, sessName)
+				}
 				if _, err := os.Stat(workDir); os.IsNotExist(err) {
 					os.MkdirAll(workDir, 0755)
 				}

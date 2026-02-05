@@ -28,13 +28,25 @@ var (
 )
 
 // BlockCache stores the mapping of terminal blocks to Telegram messages
+// Uses content hash for deduplication instead of position
 type BlockCache struct {
 	Blocks []CachedBlock `json:"blocks"`
+	Hashes map[string]int64 `json:"hashes"` // hash -> msgID for dedup
 }
 
 type CachedBlock struct {
 	Text  string `json:"text"`
 	MsgID int64  `json:"msg_id"`
+	Hash  string `json:"hash"`
+}
+
+// blockHash returns a hash of the first 100 chars of a block for deduplication
+func blockHash(text string) string {
+	normalized := strings.TrimSpace(text)
+	if len(normalized) > 100 {
+		normalized = normalized[:100]
+	}
+	return normalized
 }
 
 func loadBlockCache(sessionName string) *BlockCache {
@@ -129,7 +141,7 @@ func getLastBlocksFromTmux(tmuxSession string) []string {
 }
 
 // extractBlocks extracts ● bullet blocks from lines[start:end]
-// Stops at the first ─── line (input box) or status line - nothing after that is processed
+// Skips status lines (spinners) but continues parsing - they appear during work, not after
 func extractBlocks(lines []string, start, end int) []string {
 	var blocks []string
 	var currentBlock strings.Builder
@@ -139,9 +151,37 @@ func extractBlocks(lines []string, start, end int) []string {
 		line := lines[i]
 		trimmed := strings.TrimSpace(line)
 
-		// Stop at input box or status indicators
-		if strings.HasPrefix(trimmed, "───") || isStatusLine(trimmed) {
-			break
+		// Stop at input box (the final ─── before the empty prompt)
+		if strings.HasPrefix(trimmed, "───") {
+			// Check if this is the final input box (followed by empty ❯)
+			// by looking at the next few lines
+			isFinalInputBox := false
+			for j := i + 1; j < end && j < i+4; j++ {
+				nextTrimmed := strings.TrimSpace(lines[j])
+				if nextTrimmed == "" {
+					continue
+				}
+				if strings.HasPrefix(nextTrimmed, "❯") {
+					isFinalInputBox = true
+				}
+				break
+			}
+			if isFinalInputBox {
+				break
+			}
+			// Not the final input box - close current block but continue looking for more
+			if inBlock && currentBlock.Len() > 0 {
+				blocks = append(blocks, strings.TrimSpace(currentBlock.String()))
+				currentBlock.Reset()
+				inBlock = false
+			}
+			continue
+		}
+
+		// Skip status indicators (spinners) - they appear during work
+		// Don't break, just skip - there may be more content after
+		if isStatusLine(trimmed) {
+			continue
 		}
 
 		// Skip bottom status line and ❯ prompts
@@ -185,12 +225,30 @@ func isStatusLine(trimmed string) bool {
 	return strings.HasPrefix(trimmed, "✱") || // Hashing, Thinking
 		strings.HasPrefix(trimmed, "✢") || // Symbioting, Computing
 		strings.HasPrefix(trimmed, "✽") || // Other status
+		strings.HasPrefix(trimmed, "✻") || // Sautéed, etc
 		strings.HasPrefix(trimmed, "+") || // Progress indicator
 		strings.HasPrefix(trimmed, "*") // Alternative status
 }
 
+// isStatusBlock checks if a block content looks like a transient status message
+func isStatusBlock(text string) bool {
+	lower := strings.ToLower(text)
+	// Skip short blocks that are just status words
+	if len(text) < 50 {
+		statusWords := []string{"thinking", "transfiguring", "spinning", "sautéed", "sauteed",
+			"hashing", "computing", "processing", "loading", "churned", "working", "concocting"}
+		for _, word := range statusWords {
+			if strings.Contains(lower, word) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func removeBulletPrefix(s string) string {
-	for _, prefix := range []string{"⏺ ", "⏺  ", "● ", "✻ "} {
+	// Order matters: longer prefixes first to match correctly
+	for _, prefix := range []string{"⏺  ", "⏺ ", "● ", "✻ "} {
 		if strings.HasPrefix(s, prefix) {
 			return strings.TrimPrefix(s, prefix)
 		}
@@ -198,15 +256,24 @@ func removeBulletPrefix(s string) string {
 	return s
 }
 
-// isClaudeIdle checks if Claude is waiting for input (empty ❯ prompt visible)
+// isClaudeIdle checks if Claude is waiting for input (empty ❯ prompt visible, no spinner)
 func isClaudeIdle(tmuxSession string) bool {
-	cmd := exec.Command(tmuxPath, "capture-pane", "-t", tmuxSession, "-p", "-S", "-10")
+	cmd := exec.Command(tmuxPath, "capture-pane", "-t", tmuxSession, "-p", "-S", "-15")
 	output, err := cmd.Output()
 	if err != nil {
 		return false
 	}
 
 	lines := strings.Split(string(output), "\n")
+
+	// First, check if there's an active spinner/status - if so, not idle
+	for i := len(lines) - 1; i >= 0 && i >= len(lines)-10; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if isStatusLine(trimmed) {
+			return false // Still working
+		}
+	}
+
 	// Look for input box (────) followed by empty prompt (❯ with no text)
 	foundInputBox := false
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -232,47 +299,77 @@ func isClaudeIdle(tmuxSession string) bool {
 }
 
 // syncBlocksToTelegram parses the tmux terminal and syncs blocks to Telegram.
+// Uses content hash for deduplication to avoid sending duplicate messages.
 func syncBlocksToTelegram(config *Config, sessName string, topicID int64, isFinal bool) int {
 	tmuxName := sessionName(sessName)
 	blocks := getLastBlocksFromTmux(tmuxName)
+	hookLog("sync: session=%s blocks=%d isFinal=%v", sessName, len(blocks), isFinal)
 	if len(blocks) == 0 {
 		return 0
 	}
 
 	cache := loadBlockCache(sessName)
+	if cache.Hashes == nil {
+		cache.Hashes = make(map[string]int64)
+	}
+	hookLog("sync: session=%s cacheBlocks=%d hashes=%d", sessName, len(cache.Blocks), len(cache.Hashes))
+
+	// Track which blocks we're sending this round
+	newBlocks := make([]CachedBlock, 0, len(blocks))
 
 	for i, block := range blocks {
+		// Skip blocks that look like transient status messages
+		if isStatusBlock(block) {
+			hookLog("sync: session=%s skipping status block: %s", sessName, truncate(block, 30))
+			continue
+		}
+
+		hash := blockHash(block)
 		displayText := block
 		if isFinal && i == len(blocks)-1 {
 			displayText = "✅ " + sessName + "\n\n" + block
 		}
 
-		if i < len(cache.Blocks) {
-			// Block already has a Telegram message - edit if changed
-			if strings.TrimSpace(cache.Blocks[i].Text) != strings.TrimSpace(block) {
-				cache.Blocks[i].Text = block
-				if cache.Blocks[i].MsgID > 0 {
-					editMessage(config, config.GroupID, cache.Blocks[i].MsgID, topicID, displayText)
-				} else {
-					// Seeded block changed - send as new message
-					msgID, err := sendMessageGetID(config, config.GroupID, topicID, displayText)
-					if err == nil && msgID > 0 {
-						cache.Blocks[i].MsgID = msgID
+		// Check if we already sent this block (by hash)
+		if existingMsgID, exists := cache.Hashes[hash]; exists {
+			if existingMsgID == -1 {
+				// Block was shown before restart - don't resend, just track it
+				newBlocks = append(newBlocks, CachedBlock{Text: block, MsgID: -1, Hash: hash})
+				continue
+			}
+			if existingMsgID > 0 {
+				// Block already sent - check if content changed (for edits)
+				for j := range cache.Blocks {
+					if cache.Blocks[j].Hash == hash {
+						if strings.TrimSpace(cache.Blocks[j].Text) != strings.TrimSpace(block) {
+							// Content changed, edit the message
+							cache.Blocks[j].Text = block
+							editMessage(config, config.GroupID, existingMsgID, topicID, displayText)
+						} else if isFinal && i == len(blocks)-1 {
+							// Add ✅ prefix on final
+							editMessage(config, config.GroupID, existingMsgID, topicID, displayText)
+						}
+						break
 					}
 				}
-			} else if isFinal && i == len(blocks)-1 && cache.Blocks[i].MsgID > 0 {
-				// Even if text didn't change, add ✅ prefix on final
-				editMessage(config, config.GroupID, cache.Blocks[i].MsgID, topicID, displayText)
+				newBlocks = append(newBlocks, CachedBlock{Text: block, MsgID: existingMsgID, Hash: hash})
+				continue
 			}
-		} else {
-			// New block - send new message
-			msgID, err := sendMessageGetID(config, config.GroupID, topicID, displayText)
-			if err == nil && msgID > 0 {
-				cache.Blocks = append(cache.Blocks, CachedBlock{Text: block, MsgID: msgID})
-			}
+		}
+		// New block - send it
+		hookLog("sync: session=%s sending NEW block %d hash=%s", sessName, i, truncate(hash, 30))
+		msgID, err := sendMessageGetID(config, config.GroupID, topicID, displayText)
+		if err != nil {
+			hookLog("sync: session=%s ERROR sending block %d: %v", sessName, i, err)
+			newBlocks = append(newBlocks, CachedBlock{Text: block, MsgID: 0, Hash: hash})
+		} else if msgID > 0 {
+			hookLog("sync: session=%s block %d sent msgID=%d", sessName, i, msgID)
+			cache.Hashes[hash] = msgID
+			newBlocks = append(newBlocks, CachedBlock{Text: block, MsgID: msgID, Hash: hash})
 		}
 	}
 
+	cache.Blocks = newBlocks
 	saveBlockCache(sessName, cache)
 	return len(blocks)
 }
@@ -306,16 +403,21 @@ func initializeMonitors(config *Config) {
 			StableCount:     0,
 		}
 
-		// Ensure block cache matches current state (prevents re-sending)
+		// Populate hash cache with existing blocks to prevent re-sending after restart
+		// Use msgID = -1 as marker for "already shown, don't resend"
 		cache := loadBlockCache(sessName)
-		if len(cache.Blocks) == 0 && len(currentBlocks) > 0 {
-			for _, b := range currentBlocks {
-				cache.Blocks = append(cache.Blocks, CachedBlock{Text: b, MsgID: 0})
-			}
-			saveBlockCache(sessName, cache)
+		if cache.Hashes == nil {
+			cache.Hashes = make(map[string]int64)
 		}
-
-		hookLog("monitor: initialized session=%s blocks=%d idle=%v", sessName, len(currentBlocks), idle)
+		for _, block := range currentBlocks {
+			hash := blockHash(block)
+			if _, exists := cache.Hashes[hash]; !exists {
+				cache.Hashes[hash] = -1 // Mark as shown but no telegram msg
+				cache.Blocks = append(cache.Blocks, CachedBlock{Text: block, MsgID: -1, Hash: hash})
+			}
+		}
+		saveBlockCache(sessName, cache)
+		hookLog("monitor: initialized session=%s blocks=%d idle=%v cache=%d", sessName, len(currentBlocks), idle, len(cache.Hashes))
 	}
 }
 
@@ -355,27 +457,9 @@ func startSessionMonitor(config *Config) {
 			}
 			monitorsMu.Unlock()
 
-			// Polling schedule based on time since last user message:
-			// - First 1 minute: poll every 3s (normal ticker rate)
-			// - After 1 minute up to 1 hour: poll every 30s
-			// - After 1 hour: stop polling this session
-			timeSinceUser := time.Since(mon.LastUserMessage)
-
-			if timeSinceUser > 1*time.Hour {
-				// Stop polling after 1 hour of no user activity
-				continue
-			}
-
-			if timeSinceUser > 1*time.Minute {
-				// Slow polling: every 30s (10 ticks * 3s)
-				mon.SlowPollCounter++
-				if mon.SlowPollCounter < 10 {
-					continue
-				}
-				mon.SlowPollCounter = 0
-			} else {
-				mon.SlowPollCounter = 0 // Reset counter during fast polling
-			}
+			// Always poll every 3s - slow polling caused missed messages
+			// The completed flag prevents unnecessary syncs when idle
+			_ = mon.SlowPollCounter // unused now, kept for struct compat
 
 			blocks := getLastBlocksFromTmux(tmuxName)
 			hookLog("monitor: session=%s blocks=%d firstPoll=%v", sessName, len(blocks), !exists)
@@ -426,48 +510,44 @@ func startSessionMonitor(config *Config) {
 				mon.StableCount++
 			}
 
-			// If blocks are stable for 2+ polls AND Claude is idle → mark complete
+			// If blocks are stable for 3+ polls AND Claude is idle → mark complete
+			// Increased from 2 to 3 polls (9s) to avoid premature completion
 			idle := isClaudeIdle(tmuxName)
 			hookLog("monitor: session=%s stable=%d completed=%v idle=%v", sessName, mon.StableCount, mon.Completed, idle)
-			if !mon.Completed && mon.StableCount >= 2 && idle {
+			if !mon.Completed && mon.StableCount >= 3 && idle {
 				n := syncBlocksToTelegram(freshConfig, sessName, info.TopicID, true)
 				if n == 0 {
 					sendMessage(freshConfig, freshConfig.GroupID, info.TopicID, fmt.Sprintf("✅ %s", sessName))
 				}
 				mon.Completed = true
-			} else if !mon.Completed && mon.StableCount >= 10 {
-				// Blocks stable for 30s+ but not idle (user might be typing)
-				// Sync anyway to avoid missing messages
-				syncBlocksToTelegram(freshConfig, sessName, info.TopicID, false)
-				hookLog("monitor: session=%s force sync after 30s stable", sessName)
 			}
+			// Removed: force completion after 30s stable - this caused missed messages
+			// Now we only complete when truly idle
 		}
 	}
 }
 
 // ResetSessionMonitor marks a session as actively awaiting new output (called when user sends a message)
 // This prevents the monitor from treating the session as idle/completed.
+// Does NOT clear cache - hash-based dedup prevents re-sending old blocks.
 func ResetSessionMonitor(sessionName string) {
 	monitorsMu.Lock()
 	defer monitorsMu.Unlock()
 
-	// Instead of deleting, mark as actively awaiting response
-	// This prevents the next poll from treating existing blocks as "seed"
 	if mon, exists := monitors[sessionName]; exists {
 		mon.Completed = false
 		mon.StableCount = 0
 		mon.LastUserMessage = time.Now()
 		mon.LastActivity = time.Now()
-		// Keep LastBlocks so we can detect when NEW blocks appear
+		// Keep LastBlocks - only new blocks will be detected as changes
 	} else {
-		// Create fresh monitor marking user just sent a message
 		monitors[sessionName] = &SessionMonitor{
 			LastUserMessage: time.Now(),
 			LastActivity:    time.Now(),
 			Completed:       false,
 		}
 	}
-	// Don't clear block cache - we need it to know what's already been sent
+	// Don't clear cache - hash dedup handles everything
 }
 
 // ClearSessionMonitor completely removes monitor state and cache (called on /continue, /new, /delete)

@@ -232,19 +232,19 @@ func isClaudeIdle(tmuxSession string) bool {
 }
 
 // syncBlocksToTelegram parses the tmux terminal and syncs blocks to Telegram.
-func syncBlocksToTelegram(config *Config, sessionName string, topicID int64, isFinal bool) int {
-	tmuxName := "claude-" + sessionName
+func syncBlocksToTelegram(config *Config, sessName string, topicID int64, isFinal bool) int {
+	tmuxName := sessionName(sessName)
 	blocks := getLastBlocksFromTmux(tmuxName)
 	if len(blocks) == 0 {
 		return 0
 	}
 
-	cache := loadBlockCache(sessionName)
+	cache := loadBlockCache(sessName)
 
 	for i, block := range blocks {
 		displayText := block
 		if isFinal && i == len(blocks)-1 {
-			displayText = "✅ " + sessionName + "\n\n" + block
+			displayText = "✅ " + sessName + "\n\n" + block
 		}
 
 		if i < len(cache.Blocks) {
@@ -273,7 +273,7 @@ func syncBlocksToTelegram(config *Config, sessionName string, topicID int64, isF
 		}
 	}
 
-	saveBlockCache(sessionName, cache)
+	saveBlockCache(sessName, cache)
 	return len(blocks)
 }
 
@@ -296,7 +296,7 @@ func startSessionMonitor(config *Config) {
 				continue
 			}
 
-			tmuxName := "claude-" + sessName
+			tmuxName := sessionName(sessName)
 			if !tmuxSessionExists(tmuxName) {
 				continue
 			}

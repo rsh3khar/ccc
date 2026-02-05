@@ -679,7 +679,7 @@ func listen() error {
 						editMessageRemoveKeyboard(config, cb.Message.Chat.ID, cb.Message.MessageID, newText)
 					}
 
-					tmuxName := "claude-" + sessionName
+					tmuxName := "claude-" + strings.ReplaceAll(sessionName, ".", "_")
 					if tmuxSessionExists(tmuxName) {
 						// Send arrow down keys to select option, then Enter
 						for i := 0; i < optionIndex; i++ {
@@ -717,7 +717,7 @@ func listen() error {
 				config, _ = loadConfig()
 				sessionName := getSessionByTopic(config, threadID)
 				if sessionName != "" {
-					tmuxName := "claude-" + sessionName
+					tmuxName := "claude-" + strings.ReplaceAll(sessionName, ".", "_")
 					if tmuxSessionExists(tmuxName) {
 						sendMessage(config, chatID, threadID, "🎤 Transcribing...")
 						// Download and transcribe
@@ -746,7 +746,7 @@ func listen() error {
 				config, _ = loadConfig()
 				sessionName := getSessionByTopic(config, threadID)
 				if sessionName != "" {
-					tmuxName := "claude-" + sessionName
+					tmuxName := "claude-" + strings.ReplaceAll(sessionName, ".", "_")
 					if tmuxSessionExists(tmuxName) {
 						// Get largest photo (last in array)
 						photo := msg.Photo[len(msg.Photo)-1]
@@ -773,7 +773,7 @@ func listen() error {
 				config, _ = loadConfig()
 				sessionName := getSessionByTopic(config, threadID)
 				if sessionName != "" {
-					tmuxName := "claude-" + sessionName
+					tmuxName := "claude-" + strings.ReplaceAll(sessionName, ".", "_")
 					if tmuxSessionExists(tmuxName) {
 						sessionInfo := config.Sessions[sessionName]
 						destDir := sessionInfo.Path
@@ -878,7 +878,7 @@ func listen() error {
 					sendMessage(config, chatID, threadID, "❌ No session mapped to this topic. Use /new <name> to create one.")
 					continue
 				}
-				tmuxName := "claude-" + sessName
+				tmuxName := "claude-" + strings.ReplaceAll(sessName, ".", "_")
 				if tmuxSessionExists(tmuxName) {
 					killTmuxSession(tmuxName)
 					time.Sleep(300 * time.Millisecond)
@@ -916,7 +916,7 @@ func listen() error {
 					continue
 				}
 				// Kill tmux session
-				tmuxName := "claude-" + sessName
+				tmuxName := "claude-" + strings.ReplaceAll(sessName, ".", "_")
 				if tmuxSessionExists(tmuxName) {
 					killTmuxSession(tmuxName)
 				}
@@ -947,7 +947,7 @@ func listen() error {
 
 				for sessName, info := range config.Sessions {
 					// Kill tmux session
-					tmuxName := "claude-" + sessName
+					tmuxName := "claude-" + strings.ReplaceAll(sessName, ".", "_")
 					if tmuxSessionExists(tmuxName) {
 						killTmuxSession(tmuxName)
 					}
@@ -1028,7 +1028,7 @@ func listen() error {
 						sendMessage(config, chatID, threadID, "❌ No session mapped to this topic. Use /new <name> to create one.")
 						continue
 					}
-					tmuxName := "claude-" + sessionName
+					tmuxName := "claude-" + strings.ReplaceAll(sessionName, ".", "_")
 					if tmuxSessionExists(tmuxName) {
 						killTmuxSession(tmuxName)
 						time.Sleep(300 * time.Millisecond)

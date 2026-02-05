@@ -447,24 +447,20 @@ func doctor() {
 		}
 	}
 
-	// Check Claude hook
+	// Check Claude hook (only AskUserQuestion hook is needed now, polling handles the rest)
 	fmt.Print("claude hook....... ")
 	settingsPath := filepath.Join(home, ".claude", "settings.json")
 	if data, err := os.ReadFile(settingsPath); err == nil {
 		var settings map[string]interface{}
 		if json.Unmarshal(data, &settings) == nil {
 			if hooks, ok := settings["hooks"].(map[string]interface{}); ok {
-				if _, hasStop := hooks["Stop"]; hasStop {
-					fmt.Println("✅ installed")
+				if preToolUse, hasPre := hooks["PreToolUse"].([]interface{}); hasPre && len(preToolUse) > 0 {
+					fmt.Println("✅ installed (AskUserQuestion)")
 				} else {
-					fmt.Println("❌ not installed")
-					fmt.Println("   Run: ccc install")
-					allGood = false
+					fmt.Println("⚠️  optional (run: ccc install for AskUserQuestion hook)")
 				}
 			} else {
-				fmt.Println("❌ not installed")
-				fmt.Println("   Run: ccc install")
-				allGood = false
+				fmt.Println("⚠️  optional (run: ccc install for AskUserQuestion hook)")
 			}
 		} else {
 			fmt.Println("⚠️  settings.json parse error")
@@ -934,7 +930,7 @@ func listen() error {
 				continue
 			}
 
-			// /cleanup command - delete ALL sessions, tmux, folders, and threads
+			// /cleanup command - delete tmux sessions and Telegram topics (NOT folders)
 			if text == "/cleanup" {
 				config, _ = loadConfig()
 				if len(config.Sessions) == 0 {
@@ -960,7 +956,9 @@ func listen() error {
 
 					// Delete telegram thread
 					if info.TopicID > 0 && config.GroupID > 0 {
-						deleteForumTopic(config, info.TopicID)
+						if err := deleteForumTopic(config, info.TopicID); err != nil {
+							errors = append(errors, fmt.Sprintf("%s: %v", sessName, err))
+						}
 					}
 
 					cleaned = append(cleaned, sessName)

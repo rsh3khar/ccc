@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -69,7 +70,7 @@ func updateCCC(config *Config, chatID, threadID int64, offset int) {
 		return
 	}
 
-	_, err = io.Copy(f, resp.Body)
+	written, err := io.Copy(f, resp.Body)
 	f.Close()
 	if err != nil {
 		os.Remove(tmpPath)
@@ -77,17 +78,57 @@ func updateCCC(config *Config, chatID, threadID int64, offset int) {
 		return
 	}
 
-	os.Chmod(tmpPath, 0755)
-
-	if err := os.Rename(tmpPath, cccPath); err != nil {
+	// Validate downloaded binary size (ccc should be > 1MB)
+	if written < 1000000 {
 		os.Remove(tmpPath)
+		sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Downloaded file too small (%d bytes), aborting", written))
+		return
+	}
+
+	if err := os.Chmod(tmpPath, 0755); err != nil {
+		os.Remove(tmpPath)
+		sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Failed to chmod: %v", err))
+		return
+	}
+
+	// Test the new binary before replacing
+	testCmd := exec.Command(tmpPath, "version")
+	if err := testCmd.Run(); err != nil {
+		os.Remove(tmpPath)
+		sendMessage(config, chatID, threadID, fmt.Sprintf("❌ New binary failed validation: %v", err))
+		return
+	}
+
+	// Backup old binary
+	backupPath := cccPath + ".bak"
+	os.Remove(backupPath) // Remove old backup if exists
+	if err := os.Rename(cccPath, backupPath); err != nil {
+		os.Remove(tmpPath)
+		sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Failed to backup old binary: %v", err))
+		return
+	}
+
+	// Replace with new binary
+	if err := os.Rename(tmpPath, cccPath); err != nil {
+		// Restore backup
+		os.Rename(backupPath, cccPath)
 		sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Failed to replace binary: %v", err))
 		return
 	}
 
+	// Codesign on macOS
 	if runtime.GOOS == "darwin" {
-		executeCommand(fmt.Sprintf("codesign -s - %s", cccPath))
+		if err := exec.Command("codesign", "-f", "-s", "-", cccPath).Run(); err != nil {
+			// Restore backup if codesign fails
+			os.Remove(cccPath)
+			os.Rename(backupPath, cccPath)
+			sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Codesign failed: %v", err))
+			return
+		}
 	}
+
+	// Success - remove backup
+	os.Remove(backupPath)
 
 	sendMessage(config, chatID, threadID, "✅ Updated. Restarting...")
 	// Confirm offset so the /update message is not reprocessed after restart

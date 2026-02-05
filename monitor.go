@@ -277,10 +277,55 @@ func syncBlocksToTelegram(config *Config, sessName string, topicID int64, isFina
 	return len(blocks)
 }
 
+// initializeMonitors prepares all existing sessions for monitoring after a restart.
+// This ensures messages sent after /update are properly forwarded.
+func initializeMonitors(config *Config) {
+	monitorsMu.Lock()
+	defer monitorsMu.Unlock()
+
+	for sessName, info := range config.Sessions {
+		if info == nil || info.TopicID == 0 {
+			continue
+		}
+		tmuxName := sessionName(sessName)
+		if !tmuxSessionExists(tmuxName) {
+			continue
+		}
+
+		// Capture current blocks so we know what's already been shown
+		currentBlocks := getLastBlocksFromTmux(tmuxName)
+		idle := isClaudeIdle(tmuxName)
+
+		// Create monitor with current state
+		now := time.Now()
+		monitors[sessName] = &SessionMonitor{
+			LastBlocks:      currentBlocks,
+			LastUserMessage: now,
+			LastActivity:    now,
+			Completed:       idle, // Only completed if Claude is waiting for input
+			StableCount:     0,
+		}
+
+		// Ensure block cache matches current state (prevents re-sending)
+		cache := loadBlockCache(sessName)
+		if len(cache.Blocks) == 0 && len(currentBlocks) > 0 {
+			for _, b := range currentBlocks {
+				cache.Blocks = append(cache.Blocks, CachedBlock{Text: b, MsgID: 0})
+			}
+			saveBlockCache(sessName, cache)
+		}
+
+		hookLog("monitor: initialized session=%s blocks=%d idle=%v", sessName, len(currentBlocks), idle)
+	}
+}
+
 // startSessionMonitor runs a background goroutine that polls all active tmux
 // sessions every few seconds, parses their terminal output, and syncs blocks
 // to Telegram.
 func startSessionMonitor(config *Config) {
+	// Initialize all existing sessions first
+	initializeMonitors(config)
+
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 

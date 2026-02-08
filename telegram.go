@@ -49,7 +49,7 @@ func updateCCC(config *Config, chatID, threadID int64, offset int) {
 	sendMessage(config, chatID, threadID, "🔄 Updating ccc...")
 
 	binaryName := fmt.Sprintf("ccc-%s-%s", runtime.GOOS, runtime.GOARCH)
-	downloadURL := fmt.Sprintf("https://github.com/kidandcat/ccc/releases/latest/download/%s", binaryName)
+	downloadURL := fmt.Sprintf("https://github.com/rsh3khar/ccc/releases/latest/download/%s", binaryName)
 
 	resp, err := http.Get(downloadURL)
 	if err != nil {

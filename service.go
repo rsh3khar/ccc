@@ -72,6 +72,7 @@ func installSystemdService(home string) error {
 	}
 
 	servicePath := filepath.Join(serviceDir, "ccc.service")
+	// Include PATH so the service can find claude, tmux, node, etc.
 	service := fmt.Sprintf(`[Unit]
 Description=Claude Code Companion
 After=network.target
@@ -80,10 +81,12 @@ After=network.target
 ExecStart=%s listen
 Restart=always
 RestartSec=10
+Environment=PATH=%s/.local/bin:%s/.nvm/versions/node/current/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=%s
 
 [Install]
 WantedBy=default.target
-`, cccPath)
+`, cccPath, home, home, home)
 
 	if err := os.WriteFile(servicePath, []byte(service), 0644); err != nil {
 		return fmt.Errorf("failed to write service file: %w", err)

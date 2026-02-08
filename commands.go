@@ -506,16 +506,6 @@ func doctor() {
 		}
 	}
 
-	// Check transcription model
-	fmt.Print("whisper model..... ")
-	modelPath := filepath.Join(getModelsDir(), whisperModelName)
-	if _, err := os.Stat(modelPath); err == nil {
-		fmt.Printf("✅ %s\n", modelPath)
-	} else {
-		fmt.Println("⚠️  not downloaded (will auto-download on first voice message)")
-		fmt.Println("   Model: " + whisperModelName)
-	}
-
 	// Check OAuth token
 	fmt.Print("oauth token....... ")
 	if config != nil && config.OAuthToken != "" {
@@ -524,6 +514,15 @@ func doctor() {
 		fmt.Println("✅ configured (from environment)")
 	} else {
 		fmt.Println("⚠️  not set (optional)")
+	}
+
+	// Check OpenRouter key
+	fmt.Print("openrouter key.... ")
+	if config != nil && config.OpenRouterKey != "" {
+		fmt.Println("✅ configured (LLM routing enabled)")
+	} else {
+		fmt.Println("⚠️  not set (natural language routing disabled)")
+		fmt.Println("   Set with: ccc config openrouter-key <key>")
 	}
 
 	fmt.Println()
@@ -708,31 +707,10 @@ func listen() error {
 			threadID := msg.MessageThreadID
 			isGroup := msg.Chat.Type == "supergroup"
 
-			// Handle voice messages
-			if msg.Voice != nil && isGroup && threadID > 0 {
-				config, _ = loadConfig()
-				sessionName := getSessionByTopic(config, threadID)
-				if sessionName != "" {
-					tmuxName := "claude-" + strings.ReplaceAll(sessionName, ".", "_")
-					if tmuxSessionExists(tmuxName) {
-						sendMessage(config, chatID, threadID, "🎤 Transcribing...")
-						// Download and transcribe
-						audioPath := filepath.Join(os.TempDir(), fmt.Sprintf("voice_%d.ogg", time.Now().UnixNano()))
-						if err := downloadTelegramFile(config, msg.Voice.FileID, audioPath); err != nil {
-							sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Download failed: %v", err))
-						} else {
-							transcription, err := transcribeAudio(config, audioPath)
-							os.Remove(audioPath)
-							if err != nil {
-								sendMessage(config, chatID, threadID, fmt.Sprintf("❌ Transcription failed: %v", err))
-							} else if transcription != "" {
-								fmt.Printf("[voice] @%s: %s\n", msg.From.Username, transcription)
-								sendMessage(config, chatID, threadID, fmt.Sprintf("📝 %s", transcription))
-								ResetSessionMonitor(sessionName)
-								sendToTmux(tmuxName, "[Audio transcription, may contain errors]: "+transcription)
-							}
-						}
-					}
+			// Voice messages not supported (whisper removed)
+			if msg.Voice != nil {
+				if isGroup && threadID > 0 {
+					sendMessage(config, chatID, threadID, "Voice messages not supported. Please send text.")
 				}
 				continue
 			}
@@ -863,6 +841,13 @@ func listen() error {
 			// If auth is waiting for code, send it
 			if authWaitingCode && !strings.HasPrefix(text, "/") {
 				go handleAuthCode(config, chatID, threadID, text)
+				continue
+			}
+
+			// /list command - show all sessions with status
+			if text == "/list" {
+				config, _ = loadConfig()
+				handleRouterStatus(config, chatID, threadID)
 				continue
 			}
 
@@ -1047,6 +1032,18 @@ func listen() error {
 				continue
 			}
 
+			// Route through LLM for non-topic group messages and private chat
+			if !strings.HasPrefix(text, "/") && config.OpenRouterKey != "" {
+				// For group messages not in a topic, always route
+				// For private chat, route to enable natural language session management
+				if (isGroup && threadID == 0) || !isGroup {
+					config, _ = loadConfig()
+					if routeMessage(config, chatID, threadID, text) {
+						continue
+					}
+				}
+			}
+
 			// Check if message is in a topic (interactive session)
 			if isGroup && threadID > 0 {
 				// Reload config to get latest sessions
@@ -1121,7 +1118,8 @@ func listen() error {
 func printHelp() {
 	fmt.Printf(`ccc - Claude Code Companion v%s
 
-Your companion for Claude Code - control sessions remotely via Telegram and tmux.
+Control Claude Code sessions remotely via Telegram and tmux.
+With LLM router: send natural language commands from Telegram.
 
 USAGE:
     ccc                     Start/attach tmux session in current directory
@@ -1132,30 +1130,41 @@ COMMANDS:
     setup <token>           Complete setup (bot, hook, service - all in one!)
     doctor                  Check all dependencies and configuration
     config                  Show/set configuration values
-    config projects-dir <path>  Set base directory for projects
-    config oauth-token <token>  Set OAuth token
-    setgroup                Configure Telegram group for topics (if skipped during setup)
-    listen                  Start the Telegram bot listener manually
-    install                 Install Claude hook manually
-    send <file>             Send file to current session's Telegram topic
-    relay [port]            Start relay server for large files (default: 8080)
-    run                     Run Claude directly (used by tmux sessions)
-    hook                    Handle Claude hook (internal)
+    config openrouter-key <key>  Set OpenRouter API key for LLM routing
+    config projects-dir <path>   Set base directory for projects
+    config oauth-token <token>   Set OAuth token
+    setgroup                Configure Telegram group for topics
+    listen                  Start the Telegram bot listener
+    install                 Install Claude hook
+    send <file>             Send file to session's Telegram topic
+    relay [port]            Start relay server for large files
 
 TELEGRAM COMMANDS:
-    /new <name>             Create new session with topic (in projects_dir)
-    /new ~/path/name        Create session with custom path
+    /new <name>             Create new session with topic
     /new                    Restart session in current topic
-    /continue               Restart session keeping conversation history
+    /list                   List all sessions with status
+    /continue               Restart session keeping history
+    /delete                 Delete current session and thread
+    /cleanup                Delete ALL sessions and threads
     /c <cmd>                Execute shell command
+    /stats                  Show system stats
     /update                 Update ccc binary from GitHub
-    /restart                Restart ccc service (fixes stuck monitor)
+    /restart                Restart ccc service
+    /auth                   Re-authenticate Claude OAuth
+
+NATURAL LANGUAGE (when OpenRouter key is configured):
+    "start a new session to research X"    Creates session + sends prompt
+    "what's the status"                    Shows all sessions
+    "check on the research session"        Peeks at session output
+    "stop the quantum session"             Kills session
+    "switch to my-project"                 Shows topic link
+    (anything else)                        Forwarded to active session
 
 FLAGS:
     -h, --help              Show this help
     -v, --version           Show version
 
-For more info: https://github.com/kidandcat/ccc
+For more info: https://github.com/rsh3khar/ccc
 `, version)
 }
 

@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-const version = "1.5.6"
+const version = "2.0.0"
 
 // SessionInfo stores information about a session
 type SessionInfo struct {
@@ -18,15 +18,15 @@ type SessionInfo struct {
 
 // Config stores bot configuration and session mappings
 type Config struct {
-	BotToken         string                  `json:"bot_token"`
-	ChatID           int64                   `json:"chat_id"`                     // Private chat for simple commands
-	GroupID          int64                   `json:"group_id,omitempty"`          // Group with topics for sessions
-	Sessions         map[string]*SessionInfo `json:"sessions,omitempty"`          // session name -> session info
-	ProjectsDir      string                  `json:"projects_dir,omitempty"`      // Base directory for new projects (default: ~)
-	TranscriptionLang string                  `json:"transcription_lang,omitempty"` // Language code for whisper (e.g. "es", "en")
-	RelayURL         string                  `json:"relay_url,omitempty"`         // Relay server URL for large file transfers
-	Away             bool                    `json:"away"`
-	OAuthToken       string                  `json:"oauth_token,omitempty"`
+	BotToken      string                  `json:"bot_token"`
+	ChatID        int64                   `json:"chat_id"`                // Private chat for simple commands
+	GroupID       int64                   `json:"group_id,omitempty"`     // Group with topics for sessions
+	Sessions      map[string]*SessionInfo `json:"sessions,omitempty"`     // session name -> session info
+	ProjectsDir   string                  `json:"projects_dir,omitempty"` // Base directory for new projects (default: ~)
+	RelayURL      string                  `json:"relay_url,omitempty"`    // Relay server URL for large file transfers
+	Away          bool                    `json:"away"`
+	OAuthToken    string                  `json:"oauth_token,omitempty"`
+	OpenRouterKey string                  `json:"openrouter_key,omitempty"` // OpenRouter API key for LLM router
 }
 
 // TelegramMessage represents a Telegram message
@@ -41,12 +41,12 @@ type TelegramMessage struct {
 		ID       int64  `json:"id"`
 		Username string `json:"username"`
 	} `json:"from"`
-	Text           string           `json:"text"`
-	ReplyToMessage *TelegramMessage `json:"reply_to_message,omitempty"`
-	Voice          *TelegramVoice   `json:"voice,omitempty"`
-	Photo          []TelegramPhoto  `json:"photo,omitempty"`
+	Text           string            `json:"text"`
+	ReplyToMessage *TelegramMessage  `json:"reply_to_message,omitempty"`
+	Voice          *TelegramVoice    `json:"voice,omitempty"`
+	Photo          []TelegramPhoto   `json:"photo,omitempty"`
 	Document       *TelegramDocument `json:"document,omitempty"`
-	Caption        string           `json:"caption,omitempty"`
+	Caption        string            `json:"caption,omitempty"`
 }
 
 type TelegramVoice struct {
@@ -197,15 +197,15 @@ func main() {
 			} else {
 				fmt.Println("oauth_token: not set")
 			}
-			if config.TranscriptionLang != "" {
-				fmt.Printf("transcription_lang: %s\n", config.TranscriptionLang)
+			if config.OpenRouterKey != "" {
+				fmt.Println("openrouter_key: configured")
 			} else {
-				fmt.Println("transcription_lang: not set (auto-detect)")
+				fmt.Println("openrouter_key: not set")
 			}
 			fmt.Println("\nUsage: ccc config <key> <value>")
 			fmt.Println("  ccc config projects-dir ~/Projects")
 			fmt.Println("  ccc config oauth-token <token>")
-			fmt.Println("  ccc config transcription-lang es")
+			fmt.Println("  ccc config openrouter-key <key>")
 			os.Exit(0)
 		}
 		key := os.Args[2]
@@ -226,11 +226,11 @@ func main() {
 				} else {
 					fmt.Println("not set")
 				}
-			case "transcription-lang":
-				if config.TranscriptionLang != "" {
-					fmt.Println(config.TranscriptionLang)
+			case "openrouter-key":
+				if config.OpenRouterKey != "" {
+					fmt.Println("configured")
 				} else {
-					fmt.Println("not set (auto-detect)")
+					fmt.Println("not set")
 				}
 			default:
 				fmt.Fprintf(os.Stderr, "Unknown config key: %s\n", key)
@@ -246,28 +246,28 @@ func main() {
 				fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
 				os.Exit(1)
 			}
-			fmt.Printf("✅ projects_dir set to: %s\n", getProjectsDir(config))
+			fmt.Printf("projects_dir set to: %s\n", getProjectsDir(config))
 		case "oauth-token":
 			config.OAuthToken = value
 			if err := saveConfig(config); err != nil {
 				fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
 				os.Exit(1)
 			}
-			fmt.Println("✅ OAuth token saved")
+			fmt.Println("OAuth token saved")
 		case "bot-token":
 			config.BotToken = value
 			if err := saveConfig(config); err != nil {
 				fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
 				os.Exit(1)
 			}
-			fmt.Println("✅ Bot token saved")
-		case "transcription-lang":
-			config.TranscriptionLang = value
+			fmt.Println("Bot token saved")
+		case "openrouter-key":
+			config.OpenRouterKey = value
 			if err := saveConfig(config); err != nil {
 				fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
 				os.Exit(1)
 			}
-			fmt.Printf("✅ Transcription language set to: %s\n", value)
+			fmt.Println("OpenRouter API key saved")
 		default:
 			fmt.Fprintf(os.Stderr, "Unknown config key: %s\n", key)
 			os.Exit(1)
@@ -345,7 +345,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Warning: Could not uninstall hooks: %v\n", err)
 		}
 		uninstallSkill()
-		fmt.Println("✅ CCC uninstalled")
+		fmt.Println("CCC uninstalled")
 
 	case "send":
 		if len(os.Args) < 3 {
